@@ -1,7 +1,5 @@
-use sqlparser::dialect::GenericDialect;
-use sqlparser::parser::Parser;
-use stardust_db::interpreter::Interpreter;
-use stardust_db::query_process::process_query;
+use sqlparser::{dialect::GenericDialect, parser::Parser};
+use stardust_db::{interpreter::Interpreter, query_process::process_query};
 use std::io;
 
 fn main() {

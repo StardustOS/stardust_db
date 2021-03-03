@@ -1,12 +1,8 @@
-use std::convert::TryInto;
-use std::fmt::Formatter;
-use std::mem::size_of;
-use std::num::ParseIntError;
-use std::{borrow::Cow, ops::Not};
-
 use crate::error::{Error, ExecutionError, Result};
-
 use serde::{Deserialize, Serialize};
+use std::{
+    borrow::Cow, convert::TryInto, fmt::Formatter, mem::size_of, num::ParseIntError, ops::Not,
+};
 
 pub type IntegerStorage = i64;
 

@@ -1,21 +1,25 @@
-use std::convert::TryInto;
-use std::mem::size_of;
+use std::{convert::TryInto, mem::size_of};
 
 use indexmap::map::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use crate::data_types::{Type, Value};
-use crate::error::{Error, ExecutionError, Result};
+use crate::{
+    data_types::{Type, Value},
+    error::{Error, ExecutionError, Result},
+};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct ColumnName {
     table_name: Option<String>,
-    column_name: String
+    column_name: String,
 }
 
 impl ColumnName {
     pub fn new(table_name: Option<String>, column_name: String) -> Self {
-        Self { table_name, column_name }
+        Self {
+            table_name,
+            column_name,
+        }
     }
 }
 
@@ -43,7 +47,9 @@ impl Columns {
 
     fn find_entry(&self, name: &ColumnName) -> Result<&(Type, usize)> {
         if name.table_name.is_some() {
-            self.columns.get(name).ok_or_else(|| Error::Execution(ExecutionError::NoColumn(name.to_string())))
+            self.columns
+                .get(name)
+                .ok_or_else(|| Error::Execution(ExecutionError::NoColumn(name.to_string())))
         } else {
             if let Some(result) = self.columns.get(name) {
                 Ok(result)
@@ -52,7 +58,9 @@ impl Columns {
                 for (existing_name, entry) in &self.columns {
                     if existing_name.column_name == name.column_name {
                         if result.is_some() {
-                            return Err(Error::Execution(ExecutionError::AmbiguousName(name.to_string())));
+                            return Err(Error::Execution(ExecutionError::AmbiguousName(
+                                name.to_string(),
+                            )));
                         } else {
                             result = Some(entry)
                         }
@@ -72,9 +80,7 @@ impl Columns {
     }
 
     pub fn names_and_types(&self) -> impl Iterator<Item = (&ColumnName, Type)> {
-        self.columns
-            .iter()
-            .map(|(name, (t, _))| (name, *t))
+        self.columns.iter().map(|(name, (t, _))| (name, *t))
     }
 
     pub fn get_type(&self, name: &ColumnName) -> Result<Type> {
@@ -87,7 +93,9 @@ impl Columns {
 
     pub fn add_column(&mut self, name: ColumnName, t: Type) -> Result<()> {
         if self.columns.contains_key(&name) {
-            return Err(Error::Execution(ExecutionError::ColumnExists(name.to_string())));
+            return Err(Error::Execution(ExecutionError::ColumnExists(
+                name.to_string(),
+            )));
         }
         if let Some(s) = t.size() {
             self.columns.insert(name, (t, self.sized_len));
@@ -99,25 +107,6 @@ impl Columns {
         }
         Ok(())
     }
-
-    /*pub fn extend_from_existing(&mut self, existing: Columns) -> Result<()> {
-        for (name, (t, _)) in existing.columns {
-            self.add_column(name, t)?
-        }
-        Ok(())
-    }
-
-    pub fn extend_from_existing_filter<I>(&mut self, existing: &Columns, names: I) -> Result<()>
-    where
-        I: IntoIterator<Item = String>,
-    {
-        for name in names {
-            if let Some((t, _)) = existing.columns.get(&name) {
-                self.add_column(name, *t)?
-            }
-        }
-        Ok(())
-    }*/
 
     pub fn generate_row(&self, data: Vec<Value>) -> Result<Vec<u8>> {
         if self.columns.len() != data.len() {
@@ -169,7 +158,7 @@ impl Columns {
 
 pub struct JoinColumns<'a> {
     columns: &'a [&'a Columns],
-    result: Columns
+    result: Columns,
 }
 
 impl<'a> JoinColumns<'a> {
@@ -184,7 +173,6 @@ impl<'a> JoinColumns<'a> {
         Ok(Self { columns, result })
     }
 }
-
 
 fn append_unsized(position: usize, bytes: &[u8], row: &mut Vec<u8>) {
     let data_position = (row.len() as u32).to_be_bytes();

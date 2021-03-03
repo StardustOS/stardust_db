@@ -82,7 +82,7 @@ impl std::fmt::Display for Expression {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Expression::Literal(s) => write!(f, "{}", s),
-            Expression::Identifier(i) => write!(f, "{}", i)
+            Expression::Identifier(i) => write!(f, "{}", i),
         }
     }
 }
@@ -91,7 +91,7 @@ impl Expression {
     pub fn to_column_name(&self) -> ColumnName {
         match self {
             Expression::Identifier(c) => c.clone(),
-            Expression::Literal(s) => ColumnName::new(None, s.to_string())
+            Expression::Literal(s) => ColumnName::new(None, s.to_string()),
         }
     }
 }
@@ -112,7 +112,7 @@ impl SelectContents {
 pub enum Projection {
     Wildcard,
     Unaliased(Expression),
-    Aliased(Expression, String)
+    Aliased(Expression, String),
 }
 
 #[derive(Debug)]

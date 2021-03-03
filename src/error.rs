@@ -40,5 +40,5 @@ pub enum ExecutionError {
     #[error("no column named {0}")]
     NoColumn(String),
     #[error("ambiguous column name: {0}")]
-    AmbiguousName(String)
+    AmbiguousName(String),
 }

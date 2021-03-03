@@ -1,17 +1,21 @@
-use crate::ast::{
-    Column, CreateTable, DropTable, Expression, Insert, Projection, SelectContents, SelectQuery,
-    SqlQuery, Values,
+use crate::{
+    ast::{
+        Column, CreateTable, DropTable, Expression, Insert, Projection, SelectContents,
+        SelectQuery, SqlQuery, Values,
+    },
+    data_types::{Type, Value},
+    error::{Error, ExecutionError, Result},
+    storage::{ColumnName, Columns},
 };
-use crate::data_types::{Type, Value};
-use crate::error::{Error, ExecutionError, Result};
-use crate::storage::{Columns, ColumnName};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use sled::{open, Db, IVec};
-use std::collections::HashMap;
-use std::convert::TryInto;
-use std::fmt::{Display, Formatter};
-use std::path::Path;
+use std::{
+    collections::HashMap,
+    convert::TryInto,
+    fmt::{Display, Formatter},
+    path::Path,
+};
 
 pub struct Interpreter {
     db: Db,
@@ -45,7 +49,8 @@ impl Interpreter {
             default,
         } in columns
         {
-            columns_definition.add_column(ColumnName::new(Some(table_name.clone()), name), data_type)?;
+            columns_definition
+                .add_column(ColumnName::new(Some(table_name.clone()), name), data_type)?;
         }
         let encoded: Vec<u8> = bincode::serialize(&columns_definition)?;
         directory.insert(table_name.clone().into_bytes(), encoded)?;
@@ -152,7 +157,10 @@ impl Interpreter {
         let mut result_set = Relation::new(result_column.clone());
         for row in table_rows {
             let (_key, value) = row?;
-            let row_values = projections.iter().map(|e| self.resolve_expression(e, table_columns, value.as_ref())).collect::<Result<Vec<_>>>()?;
+            let row_values = projections
+                .iter()
+                .map(|e| self.resolve_expression(e, table_columns, value.as_ref()))
+                .collect::<Result<Vec<_>>>()?;
             let row = result_column.generate_row(row_values)?;
             result_set.add_row(row);
         }
