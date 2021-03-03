@@ -1,4 +1,5 @@
-use crate::storage::Type;
+use crate::{data_types::Type, storage::ColumnName};
+use std::fmt::Formatter;
 
 #[derive(Debug)]
 pub enum SqlQuery {
@@ -24,12 +25,16 @@ impl CreateTable {
 pub struct Column {
     pub name: String,
     pub data_type: Type,
-    pub default: Option<Expression>
+    pub default: Option<Expression>,
 }
 
 impl Column {
     pub fn new(name: String, data_type: Type, default: Option<Expression>) -> Self {
-        Self { name, data_type, default }
+        Self {
+            name,
+            data_type,
+            default,
+        }
     }
 }
 
@@ -70,7 +75,25 @@ impl Values {
 #[derive(Debug)]
 pub enum Expression {
     Literal(String),
-    Identifier(String),
+    Identifier(ColumnName),
+}
+
+impl std::fmt::Display for Expression {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expression::Literal(s) => write!(f, "{}", s),
+            Expression::Identifier(i) => write!(f, "{}", i)
+        }
+    }
+}
+
+impl Expression {
+    pub fn to_column_name(&self) -> ColumnName {
+        match self {
+            Expression::Identifier(c) => c.clone(),
+            Expression::Literal(s) => ColumnName::new(None, s.to_string())
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -89,17 +112,17 @@ impl SelectContents {
 pub enum Projection {
     Wildcard,
     Unaliased(Expression),
-    ColumnName(String),
+    Aliased(Expression, String)
 }
 
 #[derive(Debug)]
 pub struct TableJoins {
-    pub table: String,
+    pub tables: String,
 }
 
 impl TableJoins {
-    pub fn new(table: String) -> Self {
-        Self { table }
+    pub fn new(tables: String) -> Self {
+        Self { tables }
     }
 }
 

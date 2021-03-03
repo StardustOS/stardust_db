@@ -1,6 +1,11 @@
 use crate::ast::*;
-use crate::storage::Type;
-use sqlparser::ast::{ColumnDef, DataType, Expr, FileFormat, HiveDistributionStyle, HiveFormat, Ident, ObjectName, ObjectType, Query, Select, SelectItem, SetExpr, SqlOption, SqliteOnConflict, Statement, TableConstraint, TableFactor, Value, ColumnOption};
+use crate::data_types::Type;
+use crate::storage::ColumnName;
+use sqlparser::ast::{
+    ColumnDef, ColumnOption, DataType, Expr, FileFormat, HiveDistributionStyle, HiveFormat, Ident,
+    ObjectName, ObjectType, Query, Select, SelectItem, SetExpr, SqlOption, SqliteOnConflict,
+    Statement, TableConstraint, TableFactor, Value,
+};
 
 pub fn process_query(statement: Statement) -> SqlQuery {
     match statement {
@@ -95,7 +100,8 @@ fn parse_create_table(
             let mut default = None;
             for column_option in c.options {
                 match column_option.option {
-                    ColumnOption::Default(expr) => default = Some(parse_expression(&expr))
+                    ColumnOption::Default(expr) => default = Some(parse_expression(&expr)),
+                    _ => unimplemented!("{:?}", column_option.option),
                 }
             }
             Column::new(c.name.to_string(), convert_data_type(c.data_type), default)
@@ -142,8 +148,17 @@ fn parse_expression(expression: &Expr) -> Expression {
     match expression {
         Expr::Value(v) => Expression::Literal(parse_literal(v)),
         //Expr::Wildcard => Expression::Wildcard,
-        Expr::Identifier(i) => Expression::Identifier(i.to_string()),
+        Expr::Identifier(i) => Expression::Identifier(ColumnName::new(None, i.to_string())),
+        Expr::CompoundIdentifier(i) => Expression::Identifier(parse_compound_identifier(i)),
         _ => unimplemented!("{:?}", expression),
+    }
+}
+
+fn parse_compound_identifier(identifier: &Vec<Ident>) -> ColumnName {
+    match identifier.as_slice() {
+        [.., table, column] => ColumnName::new(Some(table.to_string()), column.to_string()),
+        [column] => ColumnName::new(None, column.to_string()),
+        _ => unimplemented!("{:?}", identifier)
     }
 }
 
@@ -161,15 +176,19 @@ fn parse_select(select: &Select) -> SelectContents {
         .projection
         .iter()
         .map(|p| match p {
-            SelectItem::UnnamedExpr(Expr::Identifier(s)) => Projection::ColumnName(s.to_string()),
             SelectItem::UnnamedExpr(e) => Projection::Unaliased(parse_expression(&e)),
+            SelectItem::ExprWithAlias { expr, alias } => Projection::Aliased(parse_expression(&expr), alias.to_string()),
             SelectItem::Wildcard => Projection::Wildcard,
             _ => unimplemented!("{:?}", p),
         })
         .collect();
-    let from = TableJoins::new(match &select.from[0].relation {
+    /*let from = TableJoins::new(select.from.iter().map(|from| match from.relation {
         TableFactor::Table { name, .. } => name.to_string(),
         _ => unimplemented!("{:?}", select.from[0].relation),
+    }).collect());*/
+    let from = TableJoins::new(match &select.from[0].relation {
+        TableFactor::Table { name, ..} => name.to_string(),
+        _ => unimplemented!("{:?}", select.from[0].relation)
     });
     SelectContents::new(projections, from)
 }

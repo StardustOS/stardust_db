@@ -1,4 +1,4 @@
-use crate::storage::Type;
+use crate::data_types::Type;
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -37,4 +37,8 @@ pub enum ExecutionError {
     ParseError(String, Type, String),
     #[error("incorrect number of columns. Expected {expected}, was given {actual}")]
     WrongNumColumns { expected: usize, actual: usize },
+    #[error("no column named {0}")]
+    NoColumn(String),
+    #[error("ambiguous column name: {0}")]
+    AmbiguousName(String)
 }

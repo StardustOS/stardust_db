@@ -22,8 +22,8 @@ fn main() {
             let query = process_query(statement);
             let result = interpreter.execute(query);
             match result {
-                Ok(relation) => println!("{}\nOK", relation),
-                Err(err) => println!("Error: {}", err)
+                Ok(relation) => print!("{}", relation),
+                Err(err) => println!("Error: {}", err),
             }
         }
     }

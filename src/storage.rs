@@ -1,89 +1,37 @@
-use crate::ast::Column;
-use crate::error::{Error, ExecutionError, Result};
+use std::convert::TryInto;
+use std::mem::size_of;
+
 use indexmap::map::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
-use std::convert::TryInto;
-use std::fmt::Formatter;
-use std::mem::size_of;
-use std::num::ParseIntError;
 
-pub type IntegerStorage = i64;
+use crate::data_types::{Type, Value};
+use crate::error::{Error, ExecutionError, Result};
 
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Type {
-    Integer,
-    String,
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash, PartialEq, Eq)]
+pub struct ColumnName {
+    table_name: Option<String>,
+    column_name: String
 }
 
-impl std::fmt::Display for Type {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Type::Integer => write!(f, "Integer"),
-            Type::String => write!(f, "String"),
-        }
+impl ColumnName {
+    pub fn new(table_name: Option<String>, column_name: String) -> Self {
+        Self { table_name, column_name }
     }
 }
 
-impl Type {
-    pub fn size(&self) -> Option<usize> {
-        match self {
-            Type::Integer => Some(size_of::<IntegerStorage>()),
-            Type::String => None,
-        }
-    }
-
-    pub fn decode(&self, data: &[u8]) -> Result<TypeContents> {
-        Ok(match self {
-            Type::Integer => {
-                TypeContents::Integer(IntegerStorage::from_be_bytes(data.try_into().map_err(
-                    |_| Error::Internal("Incorrect number of bytes of Integer Decode".to_string()),
-                )?))
-            }
-            Type::String => TypeContents::String(String::from_utf8(data.into()).map_err(|_| {
-                Error::Internal(format!("Could not decode bytes to string: {:?}", data))
-            })?),
-        })
-    }
-
-    pub fn get_contents_from_string(&self, data: String) -> Result<TypeContents> {
-        Ok(match self {
-            Type::Integer => TypeContents::Integer(data.parse().map_err(|e: ParseIntError| {
-                ExecutionError::ParseError(data, *self, e.to_string())
-            })?),
-            Type::String => TypeContents::String(data),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum TypeContents {
-    Integer(IntegerStorage),
-    String(String),
-}
-
-impl std::fmt::Display for TypeContents {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TypeContents::Integer(i) => write!(f, "{}", i),
-            TypeContents::String(s) => write!(f, "{}", s),
-        }
-    }
-}
-
-impl TypeContents {
-    pub fn encode(&self) -> (Cow<[u8]>, Type) {
-        match self {
-            TypeContents::Integer(i) => (Cow::Owned(i.to_be_bytes().into()), Type::Integer),
-            TypeContents::String(s) => (Cow::Borrowed(s.as_bytes()), Type::String),
+impl std::fmt::Display for ColumnName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(table_name) = &self.table_name {
+            write!(f, "{}.{}", table_name, self.column_name)
+        } else {
+            write!(f, "{}", self.column_name)
         }
     }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Columns {
-    columns: IndexMap<String, (Type, usize)>,
+    columns: IndexMap<ColumnName, (Type, usize)>,
     sized_len: usize,
     unsized_count: usize,
 }
@@ -93,21 +41,57 @@ impl Columns {
         Default::default()
     }
 
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.columns.keys().map(|name| name.as_ref())
+    fn find_entry(&self, name: &ColumnName) -> Result<&(Type, usize)> {
+        if name.table_name.is_some() {
+            self.columns.get(name).ok_or_else(|| Error::Execution(ExecutionError::NoColumn(name.to_string())))
+        } else {
+            if let Some(result) = self.columns.get(name) {
+                Ok(result)
+            } else {
+                let mut result = None;
+                for (existing_name, entry) in &self.columns {
+                    if existing_name.column_name == name.column_name {
+                        if result.is_some() {
+                            return Err(Error::Execution(ExecutionError::AmbiguousName(name.to_string())));
+                        } else {
+                            result = Some(entry)
+                        }
+                    }
+                }
+                result.ok_or_else(|| Error::Execution(ExecutionError::NoColumn(name.to_string())))
+            }
+        }
+    }
+
+    pub fn display_names(&self) -> impl Iterator<Item = &str> {
+        self.columns.keys().map(|name| name.column_name.as_ref())
+    }
+
+    pub fn column_names(&self) -> impl Iterator<Item = &ColumnName> {
+        self.columns.keys()
+    }
+
+    pub fn names_and_types(&self) -> impl Iterator<Item = (&ColumnName, Type)> {
+        self.columns
+            .iter()
+            .map(|(name, (t, _))| (name, *t))
+    }
+
+    pub fn get_type(&self, name: &ColumnName) -> Result<Type> {
+        self.find_entry(name).map(|(t, _)| *t)
     }
 
     pub fn is_empty(&self) -> bool {
         self.columns.is_empty()
     }
 
-    pub fn add_column(&mut self, name: String, t: Type) -> Result<()> {
+    pub fn add_column(&mut self, name: ColumnName, t: Type) -> Result<()> {
         if self.columns.contains_key(&name) {
-            return Err(Error::Execution(ExecutionError::ColumnExists(name)));
+            return Err(Error::Execution(ExecutionError::ColumnExists(name.to_string())));
         }
         if let Some(s) = t.size() {
             self.columns.insert(name, (t, self.sized_len));
-            self.sized_len += s;
+            self.sized_len += s + 1;
         } else {
             self.columns
                 .insert(name, (t, self.unsized_count * 2 * size_of::<u32>()));
@@ -116,7 +100,7 @@ impl Columns {
         Ok(())
     }
 
-    pub fn extend_from_existing(&mut self, existing: Columns) -> Result<()> {
+    /*pub fn extend_from_existing(&mut self, existing: Columns) -> Result<()> {
         for (name, (t, _)) in existing.columns {
             self.add_column(name, t)?
         }
@@ -133,9 +117,9 @@ impl Columns {
             }
         }
         Ok(())
-    }
+    }*/
 
-    pub fn generate_row(&self, data: Vec<String>) -> Result<Vec<u8>> {
+    pub fn generate_row(&self, data: Vec<Value>) -> Result<Vec<u8>> {
         if self.columns.len() != data.len() {
             return Err(Error::Execution(ExecutionError::WrongNumColumns {
                 expected: self.columns.len(),
@@ -145,98 +129,62 @@ impl Columns {
         let mut row = vec![0; self.sized_len + self.unsized_count * 2 * size_of::<u32>()];
 
         for (&(t, pos), value) in self.columns.values().zip(data) {
-            let contents = t.get_contents_from_string(value)?;
-            let (bytes, _) = contents.encode();
+            let contents = t.resolve_value(value)?;
             if let Some(size) = t.size() {
-                row[pos..pos + size].copy_from_slice(bytes.as_ref());
+                if let Some(contents) = contents {
+                    row[pos] = 1;
+                    let (bytes, _) = contents.encode();
+                    row[pos + 1..pos + 1 + size].copy_from_slice(bytes.as_ref());
+                } // Otherwise value is 0
             } else {
-                append_unsized(self.sized_len + pos, bytes.as_ref(), &mut row);
+                if let Some(contents) = contents {
+                    let (bytes, _) = contents.encode();
+                    append_unsized(self.sized_len + pos, bytes.as_ref(), &mut row);
+                } // Otherwise dictionary entry is 0
             }
         }
 
         Ok(row)
     }
 
-    pub fn get_data<'a>(&self, name: &str, row: &'a [u8]) -> Option<(Type, &'a [u8])> {
-        let &(t, position) = self.columns.get(name)?;
+    pub fn get_data<'a>(&self, name: &ColumnName, row: &'a [u8]) -> Result<Value> {
+        let &(t, position) = self.find_entry(name)?;
         if let Some(s) = t.size() {
-            Some((t, &row[position..position + s]))
-        } else {
-            get_unsized_data(self.sized_len + position, row).map(|b| (t, b))
-        }
-    }
-
-    pub fn get_typed_data(&self, name: &str, row: &[u8]) -> Option<TypeContents> {
-        let (t, bytes) = self.get_data(name, row)?;
-        t.decode(bytes).ok()
-    }
-
-    pub fn filter_row(&self, row: &[u8], filter: &Columns) -> Result<Vec<u8>> {
-        let mut result = vec![0; filter.sized_len + filter.unsized_count * 2 * size_of::<u32>()];
-        for (name, &(t, new_pos)) in filter.columns.iter() {
-            let (original_t, bytes) = self
-                .get_data(name, row)
-                .ok_or_else(|| ExecutionError::NoData(name.to_string()))?;
-            if t != original_t {
-                return Err(Error::Execution(ExecutionError::TypeError {
-                    column: name.to_string(),
-                    expected_type: t,
-                    actual_type: original_t,
-                }));
-            }
-
-            if let Some(s) = t.size() {
-                result[new_pos..new_pos + s].copy_from_slice(bytes)
+            if row[position] == 0 {
+                Ok(Value::Null)
             } else {
-                append_unsized(filter.sized_len + new_pos, bytes, &mut result)
+                let bytes = &row[position + 1..position + 1 + s];
+                t.decode(bytes).map(|contents| Value::TypedValue(contents))
+            }
+        } else {
+            if &row[position..position + 2 * size_of::<u32>()] == &[0u8; 2 * size_of::<u32>()] {
+                Ok(Value::Null)
+            } else {
+                let bytes = get_unsized_data(self.sized_len + position, row);
+                t.decode(bytes).map(|contents| Value::TypedValue(contents))
             }
         }
-        Ok(result)
     }
 }
 
 pub struct JoinColumns<'a> {
     columns: &'a [&'a Columns],
-    result: Columns,
+    result: Columns
 }
 
 impl<'a> JoinColumns<'a> {
     pub fn new(columns: &'a [&'a Columns]) -> Result<Self> {
         let mut result = Columns::new();
-        for (name, (t, _)) in columns.into_iter().flat_map(|c| c.columns.iter()) {
-            result.add_column(name.to_string(), *t)?;
-        }
-        Ok(Self { columns, result })
-    }
-
-    pub fn join_rows(&self, rows: &[&[u8]]) -> Result<Vec<u8>> {
-        if rows.len() != self.columns.len() {
-            return Err(Error::Internal(
-                "Incorrect number of rows in JoinColumns".to_string(),
-            ));
-        }
-        let mut result =
-            vec![0; self.result.sized_len + self.result.unsized_count * 2 * size_of::<u32>()];
-        let mut sized_position = 0;
-        let mut unsized_directory_position = self.result.sized_len;
-        for (column, row) in self.columns.iter().zip(rows.iter()) {
-            for (t, existing_pos) in column.columns.values() {
-                if let Some(size) = t.size() {
-                    result[sized_position..sized_position + size]
-                        .copy_from_slice(&row[*existing_pos..*existing_pos + size]);
-                    sized_position += size;
-                } else {
-                    let position = column.sized_len + existing_pos;
-                    let bytes = get_unsized_data(position, row)
-                        .ok_or_else(|| Error::Internal("row not long enough".to_string()))?;
-                    append_unsized(unsized_directory_position, bytes, &mut result);
-                    unsized_directory_position += 2 * size_of::<u32>()
-                }
+        for columns in columns {
+            for (name, &(t, _)) in &columns.columns {
+                result.add_column(name.clone(), t)?;
             }
         }
-        Ok(result)
+
+        Ok(Self { columns, result })
     }
 }
+
 
 fn append_unsized(position: usize, bytes: &[u8], row: &mut Vec<u8>) {
     let data_position = (row.len() as u32).to_be_bytes();
@@ -247,14 +195,13 @@ fn append_unsized(position: usize, bytes: &[u8], row: &mut Vec<u8>) {
     row.extend_from_slice(bytes.as_ref());
 }
 
-fn get_unsized_data(position: usize, row: &[u8]) -> Option<&[u8]> {
+fn get_unsized_data(position: usize, row: &[u8]) -> &[u8] {
     let size_start = position + size_of::<u32>();
-    let data_position =
-        u32::from_be_bytes(row.get(position..size_start)?.try_into().unwrap()) as usize;
+    let data_position = u32::from_be_bytes(row[position..size_start].try_into().unwrap()) as usize;
     let size = u32::from_be_bytes(
-        row.get(size_start..size_start + size_of::<u32>())?
+        row[size_start..size_start + size_of::<u32>()]
             .try_into()
             .unwrap(), //Shouldn't be possible,
     );
-    row.get(data_position..data_position + size as usize)
+    &row[data_position..data_position + size as usize]
 }
