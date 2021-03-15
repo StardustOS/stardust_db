@@ -1,28 +1,34 @@
-use sqlparser::{dialect::GenericDialect, parser::Parser};
-use stardust_db::{interpreter::Interpreter, query_process::process_query};
-use std::io;
+use stardust_db::{error::Result, Database};
+use std::io::{self, Write};
 
 fn main() {
+    match get_results() {
+        Err(e) => println!("Error opening database: {}", e),
+        _ => (),
+    }
+}
+
+fn get_results() -> Result<()> {
     let mut sql = String::new();
+    let mut db = Database::open("D:\\Documents\\ComputerScience\\CS5099\\test.db")?;
     loop {
         sql.clear();
+        print!(">");
+        io::stdout().flush().expect("Error flushing stdout");
         io::stdin()
             .read_line(&mut sql)
             .expect("Error reading from stdin");
         if sql.trim() == "exit" {
             break;
         }
-        let dialect = GenericDialect {};
-        let statements = Parser::parse_sql(&dialect, (&sql).as_str()).unwrap();
-        let mut interpreter =
-            Interpreter::new("D:\\Documents\\ComputerScience\\CS5099\\test.db").unwrap();
-        for statement in statements {
-            let query = process_query(statement);
-            let result = interpreter.execute(query);
-            match result {
-                Ok(relation) => print!("{}", relation),
-                Err(err) => println!("Error: {}", err),
+        match db.execute_query(sql.as_str()) {
+            Ok(relations) => {
+                for result in relations {
+                    print!("{}", result)
+                }
             }
+            Err(e) => println!("Error: {}", e),
         }
     }
+    Ok(())
 }

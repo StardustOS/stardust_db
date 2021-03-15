@@ -1,6 +1,5 @@
 use std::{convert::TryInto, mem::size_of};
 
-use indexmap::map::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -21,6 +20,18 @@ impl ColumnName {
             column_name,
         }
     }
+
+    pub fn table_name(&self) -> Option<&str> {
+        self.table_name.as_ref().map(|n| n.as_ref())
+    }
+
+    pub fn column_name(&self) -> &str {
+        self.column_name.as_ref()
+    }
+
+    pub fn destructure(self) -> (Option<String>, String) {
+        (self.table_name, self.column_name)
+    }
 }
 
 impl std::fmt::Display for ColumnName {
@@ -33,10 +44,44 @@ impl std::fmt::Display for ColumnName {
     }
 }
 
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct ColumnEntry {
+    t: Type,
+    position: usize,
+    null_index: usize,
+}
+
+impl ColumnEntry {
+    pub fn new(t: Type, position: usize, null_index: usize) -> Self {
+        Self {
+            t,
+            position,
+            null_index,
+        }
+    }
+
+    pub fn get_type(&self) -> Type {
+        self.t
+    }
+
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    pub fn null_index(&self) -> usize {
+        self.null_index
+    }
+
+    pub fn bitmask_index(&self) -> (usize, usize) {
+        (self.null_index / 8, self.null_index % 8)
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Columns {
-    columns: IndexMap<ColumnName, (Type, usize)>,
+    columns: Vec<ColumnEntry>,
     sized_len: usize,
+    sized_count: usize,
     unsized_count: usize,
 }
 
@@ -45,86 +90,79 @@ impl Columns {
         Default::default()
     }
 
-    fn find_entry(&self, name: &ColumnName) -> Result<&(Type, usize)> {
-        if name.table_name.is_some() {
-            self.columns
-                .get(name)
-                .ok_or_else(|| Error::Execution(ExecutionError::NoColumn(name.to_string())))
-        } else {
-            if let Some(result) = self.columns.get(name) {
-                Ok(result)
-            } else {
-                let mut result = None;
-                for (existing_name, entry) in &self.columns {
-                    if existing_name.column_name == name.column_name {
-                        if result.is_some() {
-                            return Err(Error::Execution(ExecutionError::AmbiguousName(
-                                name.to_string(),
-                            )));
-                        } else {
-                            result = Some(entry)
-                        }
-                    }
-                }
-                result.ok_or_else(|| Error::Execution(ExecutionError::NoColumn(name.to_string())))
-            }
+    pub fn from_column(t: Type) -> Self {
+        let mut columns = Self::with_capacity(1);
+        columns.add_column(t);
+        columns
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            columns: Vec::with_capacity(capacity),
+            ..Default::default()
         }
     }
 
-    pub fn display_names(&self) -> impl Iterator<Item = &str> {
-        self.columns.keys().map(|name| name.column_name.as_ref())
+    pub fn len(&self) -> usize {
+        self.columns.len()
     }
 
-    pub fn column_names(&self) -> impl Iterator<Item = &ColumnName> {
-        self.columns.keys()
+    fn bitmask_size(&self) -> usize {
+        (self.sized_count + 7) / 8
     }
 
-    pub fn names_and_types(&self) -> impl Iterator<Item = (&ColumnName, Type)> {
-        self.columns.iter().map(|(name, (t, _))| (name, *t))
+    fn bitmask_start(&self) -> usize {
+        self.sized_len + self.unsized_count * size_of::<u16>()
     }
 
-    pub fn get_type(&self, name: &ColumnName) -> Result<Type> {
-        self.find_entry(name).map(|(t, _)| *t)
+    fn last_unsized_position(&self) -> usize {
+        assert!(self.sized_count > 0);
+        (self.unsized_count - 1) * size_of::<u16>()
     }
 
     pub fn is_empty(&self) -> bool {
         self.columns.is_empty()
     }
 
-    pub fn add_column(&mut self, name: ColumnName, t: Type) -> Result<()> {
-        if self.columns.contains_key(&name) {
-            return Err(Error::Execution(ExecutionError::ColumnExists(
-                name.to_string(),
-            )));
-        }
+    pub fn add_column(&mut self, t: Type) -> usize {
+        let index = self.columns.len();
         if let Some(s) = t.size() {
-            self.columns.insert(name, (t, self.sized_len));
-            self.sized_len += s + 1;
+            let entry = ColumnEntry::new(t, self.sized_len, self.sized_count);
+            self.columns.push(entry);
+            self.sized_len += s;
+            self.sized_count += 1;
         } else {
-            self.columns
-                .insert(name, (t, self.unsized_count * 2 * size_of::<u32>()));
+            let entry = ColumnEntry::new(t, self.unsized_count * size_of::<u16>(), 0);
+            self.columns.push(entry);
             self.unsized_count += 1;
         }
-        Ok(())
+        index
     }
 
-    pub fn generate_row(&self, data: Vec<Value>) -> Result<Vec<u8>> {
+    pub fn generate_row<I>(&self, data: I) -> Result<Vec<u8>>
+    where
+        I: ExactSizeIterator<Item = Value>,
+    {
         if self.columns.len() != data.len() {
             return Err(Error::Execution(ExecutionError::WrongNumColumns {
                 expected: self.columns.len(),
                 actual: data.len(),
             }));
         }
-        let mut row = vec![0; self.sized_len + self.unsized_count * 2 * size_of::<u32>()];
+        let bitmask_size = self.bitmask_size();
+        let mut row = vec![0; self.bitmask_start() + bitmask_size];
+        let bitmask_start = self.bitmask_start();
 
-        for (&(t, pos), value) in self.columns.values().zip(data) {
-            let contents = t.resolve_value(value)?;
-            if let Some(size) = t.size() {
+        for (&entry, value) in self.columns.iter().zip(data) {
+            let contents = entry.get_type().resolve_value(value);
+            let pos = entry.position();
+            if let Some(size) = entry.get_type().size() {
                 if let Some(contents) = contents {
-                    row[pos] = 1;
+                    let (index, bit) = entry.bitmask_index();
+                    row[bitmask_start + index] |= 1 << bit;
                     let (bytes, _) = contents.encode();
-                    row[pos + 1..pos + 1 + size].copy_from_slice(bytes.as_ref());
-                } // Otherwise value is 0
+                    row[pos..pos + size].copy_from_slice(bytes.as_ref());
+                } // Otherwise value and bitmask is 0
             } else {
                 if let Some(contents) = contents {
                     let (bytes, _) = contents.encode();
@@ -132,64 +170,68 @@ impl Columns {
                 } // Otherwise dictionary entry is 0
             }
         }
-
+        println!("{:?}", row);
         Ok(row)
     }
 
-    pub fn get_data<'a>(&self, name: &ColumnName, row: &'a [u8]) -> Result<Value> {
-        let &(t, position) = self.find_entry(name)?;
-        if let Some(s) = t.size() {
-            if row[position] == 0 {
+    pub fn get_data<'a>(&self, index: usize, row: &'a [u8]) -> Result<Value> {
+        let entry = self
+            .columns
+            .get(index)
+            .ok_or_else(|| Error::Internal(format!("No column for index {}", index)))?;
+        if let Some(s) = entry.get_type().size() {
+            let position = entry.position();
+            let bitmask_start = self.bitmask_start();
+            let (index, bit) = entry.bitmask_index();
+            if row[bitmask_start + index] & 1 << bit == 0 {
                 Ok(Value::Null)
             } else {
-                let bytes = &row[position + 1..position + 1 + s];
-                t.decode(bytes).map(|contents| Value::TypedValue(contents))
+                let bytes = &row[position..position + s];
+                entry
+                    .get_type()
+                    .decode(bytes)
+                    .map(|contents| Value::TypedValue(contents))
             }
         } else {
-            if &row[position..position + 2 * size_of::<u32>()] == &[0u8; 2 * size_of::<u32>()] {
+            let position = self.sized_len + entry.position();
+            if &row[position..position + size_of::<u16>()] == &[0u8; size_of::<u16>()] {
                 Ok(Value::Null)
             } else {
-                let bytes = get_unsized_data(self.sized_len + position, row);
-                t.decode(bytes).map(|contents| Value::TypedValue(contents))
+                let bytes = get_unsized_data(position, self.last_unsized_position(), row);
+                entry
+                    .get_type()
+                    .decode(bytes)
+                    .map(|contents| Value::TypedValue(contents))
             }
         }
     }
 }
 
-pub struct JoinColumns<'a> {
-    columns: &'a [&'a Columns],
-    result: Columns,
-}
-
-impl<'a> JoinColumns<'a> {
-    pub fn new(columns: &'a [&'a Columns]) -> Result<Self> {
-        let mut result = Columns::new();
-        for columns in columns {
-            for (name, &(t, _)) in &columns.columns {
-                result.add_column(name.clone(), t)?;
-            }
-        }
-
-        Ok(Self { columns, result })
-    }
-}
-
-fn append_unsized(position: usize, bytes: &[u8], row: &mut Vec<u8>) {
-    let data_position = (row.len() as u32).to_be_bytes();
-    row[position..position + size_of::<u32>()].copy_from_slice(&data_position);
-    let size_point = position + size_of::<u32>();
-    row[size_point..size_point + size_of::<u32>()]
-        .copy_from_slice(&(bytes.len() as u32).to_be_bytes());
+fn append_unsized(dictionary_position: usize, bytes: &[u8], row: &mut Vec<u8>) {
+    let data_position = (row.len() as u16).to_be_bytes();
+    row[dictionary_position..dictionary_position + size_of::<u16>()]
+        .copy_from_slice(&data_position);
     row.extend_from_slice(bytes.as_ref());
 }
 
-fn get_unsized_data(position: usize, row: &[u8]) -> &[u8] {
-    let size_start = position + size_of::<u32>();
-    let data_position = u32::from_be_bytes(row[position..size_start].try_into().unwrap()) as usize;
-    let size = u32::from_be_bytes(
-        row[size_start..size_start + size_of::<u32>()]
-            .try_into()
-            .unwrap(), //Shouldn't be possible,
-    );
-    &row[data_position..data_position + size as usize]
+fn get_unsized_data(dictionary_position: usize, end_position: usize, row: &[u8]) -> &[u8] {
+    let mut next_start = dictionary_position;
+    let end = loop {
+        next_start += size_of::<u16>();
+        if next_start > end_position {
+            break row.len();
+        }
+        let end = u16::from_be_bytes(
+            row[next_start..next_start + size_of::<u16>()]
+                .try_into()
+                .unwrap(), //Shouldn't be possible,
+        ) as usize;
+        if end > 0 {
+            break end;
+        }
+    };
+    let next_start = dictionary_position + size_of::<u16>();
+    let data_position =
+        u16::from_be_bytes(row[dictionary_position..next_start].try_into().unwrap()) as usize;
+    &row[data_position..end]
 }

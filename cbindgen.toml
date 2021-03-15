@@ -1,0 +1,4 @@
+language = "C"
+include_guard = "STARDUST_DB_H"
+autogen_warning = "/* Warning, this file is generated automatically. Do not modify. */"
+no_includes = true

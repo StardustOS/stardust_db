@@ -1,8 +1,12 @@
-use crate::{ast::*, data_types::Type, storage::ColumnName};
+use crate::{
+    ast::*,
+    data_types::{Type, TypeContents},
+    storage::ColumnName,
+};
 use sqlparser::ast::{
-    ColumnDef, ColumnOption, DataType, Expr, FileFormat, HiveDistributionStyle, HiveFormat, Ident,
-    ObjectName, ObjectType, Query, Select, SelectItem, SetExpr, SqlOption, SqliteOnConflict,
-    Statement, TableConstraint, TableFactor, Value,
+    BinaryOperator, ColumnDef, ColumnOption, DataType, Expr, FileFormat, HiveDistributionStyle,
+    HiveFormat, Ident, ObjectName, ObjectType, Query, Select, SelectItem, SetExpr, SqlOption,
+    SqliteOnConflict, Statement, TableConstraint, TableFactor, Value,
 };
 
 pub fn process_query(statement: Statement) -> SqlQuery {
@@ -68,7 +72,11 @@ pub fn process_query(statement: Statement) -> SqlQuery {
             cascade,
             purge,
         } => SqlQuery::DropTable(parse_drop(object_type, if_exists, names, cascade, purge)),
-        Statement::Query(q) => SqlQuery::SelectQuery(parse_select_query(q.as_ref())),
+        Statement::Query(q) => SqlQuery::SelectQuery(parse_select_query(*q)),
+        Statement::Delete {
+            table_name,
+            selection,
+        } => SqlQuery::Delete(parse_delete(table_name, selection)),
         _ => unimplemented!(),
     }
 }
@@ -96,13 +104,23 @@ fn parse_create_table(
         .into_iter()
         .map(|c| {
             let mut default = None;
+            let mut not_null = false;
+            let mut unique = false;
             for column_option in c.options {
                 match column_option.option {
-                    ColumnOption::Default(expr) => default = Some(parse_expression(&expr)),
+                    ColumnOption::Default(expr) => default = Some(parse_expression(expr)),
+                    ColumnOption::NotNull => not_null = true,
+                    ColumnOption::Unique { .. } => unique = true,
                     _ => unimplemented!("{:?}", column_option.option),
                 }
             }
-            Column::new(c.name.to_string(), convert_data_type(c.data_type), default)
+            Column::new(
+                c.name.to_string(),
+                convert_data_type(c.data_type),
+                default,
+                not_null,
+                unique,
+            )
         })
         .collect();
     CreateTable::new(name, columns)
@@ -123,36 +141,57 @@ fn parse_insert(
     } else {
         Some(columns.into_iter().map(|c| c.to_string()).collect())
     };
-    Insert::new(
-        table_name.to_string(),
-        columns,
-        parse_select_query(source.as_ref()),
-    )
+    Insert::new(table_name.to_string(), columns, parse_select_query(*source))
 }
 
-fn parse_select_query(query: &Query) -> SelectQuery {
-    match &query.body {
+fn parse_select_query(query: Query) -> SelectQuery {
+    //println!("{:?}", query);
+    match query.body {
         SetExpr::Values(v) => SelectQuery::Values(Values::new(
-            v.0.iter()
-                .map(|row| row.iter().map(|col| parse_expression(col)).collect())
+            v.0.into_iter()
+                .map(|row| row.into_iter().map(|col| parse_expression(col)).collect())
                 .collect(),
         )),
-        SetExpr::Select(s) => SelectQuery::Select(parse_select(s.as_ref())),
+        SetExpr::Select(s) => SelectQuery::Select(parse_select(*s)),
         _ => unimplemented!("{:?}", query.body),
     }
 }
 
-fn parse_expression(expression: &Expr) -> Expression {
+fn parse_expression(expression: Expr) -> Expression {
     match expression {
-        Expr::Value(v) => Expression::Literal(parse_literal(v)),
+        Expr::Value(v) => Expression::Value(parse_value(v)),
         //Expr::Wildcard => Expression::Wildcard,
         Expr::Identifier(i) => Expression::Identifier(ColumnName::new(None, i.to_string())),
         Expr::CompoundIdentifier(i) => Expression::Identifier(parse_compound_identifier(i)),
+        Expr::BinaryOp { left, op, right } => {
+            let left = Box::new(parse_expression(*left));
+            let right = Box::new(parse_expression(*right));
+            match op {
+                BinaryOperator::And => Expression::BinaryOp(left, BinaryOp::And, right),
+                BinaryOperator::Or => Expression::BinaryOp(left, BinaryOp::Or, right),
+                BinaryOperator::Eq => {
+                    Expression::BinaryOp(left, BinaryOp::Comparison(ComparisonOp::Eq), right)
+                }
+                BinaryOperator::Lt => {
+                    Expression::BinaryOp(left, BinaryOp::Comparison(ComparisonOp::Lt), right)
+                }
+                BinaryOperator::Gt => {
+                    Expression::BinaryOp(left, BinaryOp::Comparison(ComparisonOp::Gt), right)
+                }
+                BinaryOperator::LtEq => {
+                    Expression::BinaryOp(left, BinaryOp::Comparison(ComparisonOp::LtEq), right)
+                }
+                BinaryOperator::GtEq => {
+                    Expression::BinaryOp(left, BinaryOp::Comparison(ComparisonOp::GtEq), right)
+                }
+                _ => unimplemented!("{:?}", op),
+            }
+        }
         _ => unimplemented!("{:?}", expression),
     }
 }
 
-fn parse_compound_identifier(identifier: &Vec<Ident>) -> ColumnName {
+fn parse_compound_identifier(identifier: Vec<Ident>) -> ColumnName {
     match identifier.as_slice() {
         [.., table, column] => ColumnName::new(Some(table.to_string()), column.to_string()),
         [column] => ColumnName::new(None, column.to_string()),
@@ -160,26 +199,33 @@ fn parse_compound_identifier(identifier: &Vec<Ident>) -> ColumnName {
     }
 }
 
-fn parse_literal(value: &Value) -> String {
+fn parse_value(value: Value) -> crate::data_types::Value {
     match value {
-        Value::Number(s, _) | Value::DoubleQuotedString(s) | Value::SingleQuotedString(s) => {
-            s.clone()
+        Value::DoubleQuotedString(s) | Value::SingleQuotedString(s) => {
+            crate::data_types::Value::TypedValue(TypeContents::String(s))
+        }
+        Value::Number(s, _) => crate::data_types::Value::TypedValue(TypeContents::Integer(
+            s.parse().expect("Number string was not a number"),
+        )),
+        Value::Null => crate::data_types::Value::Null,
+        Value::Boolean(b) => {
+            crate::data_types::Value::TypedValue(TypeContents::Integer(if b { 1 } else { 0 }))
         }
         _ => unimplemented!("{:?}", value),
     }
 }
 
-fn parse_select(select: &Select) -> SelectContents {
+fn parse_select(select: Select) -> SelectContents {
     let projections = select
         .projection
-        .iter()
+        .into_iter()
         .map(|p| match p {
-            SelectItem::UnnamedExpr(e) => Projection::Unaliased(parse_expression(&e)),
+            SelectItem::UnnamedExpr(e) => Projection::Unaliased(parse_expression(e)),
             SelectItem::ExprWithAlias { expr, alias } => {
-                Projection::Aliased(parse_expression(&expr), alias.to_string())
+                Projection::Aliased(parse_expression(expr), alias.to_string())
             }
             SelectItem::Wildcard => Projection::Wildcard,
-            _ => unimplemented!("{:?}", p),
+            SelectItem::QualifiedWildcard(name) => Projection::QualifiedWildcard(name.to_string()),
         })
         .collect();
     /*let from = TableJoins::new(select.from.iter().map(|from| match from.relation {
@@ -190,7 +236,8 @@ fn parse_select(select: &Select) -> SelectContents {
         TableFactor::Table { name, .. } => name.to_string(),
         _ => unimplemented!("{:?}", select.from[0].relation),
     });
-    SelectContents::new(projections, from)
+    let selection = select.selection.map(parse_expression);
+    SelectContents::new(projections, from, selection)
 }
 
 fn parse_drop(
@@ -206,6 +253,13 @@ fn parse_drop(
             DropTable::new(names)
         }
         _ => unimplemented!("{:?}", object_type),
+    }
+}
+
+fn parse_delete(table_name: ObjectName, selection: Option<Expr>) -> Delete {
+    Delete {
+        table_name: table_name.to_string(),
+        predicate: selection.map(parse_expression),
     }
 }
 

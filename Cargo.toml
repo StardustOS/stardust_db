@@ -8,12 +8,12 @@ edition = "2018"
 
 [dependencies]
 sqlparser = "0.8.0"
-sled = "0.34.6"
+sled = { version = "0.34.6", path = "../sled" }
 thiserror = "1"
 serde = { version = "1.0", features = ["derive"]}
 bincode = "1"
 itertools = "0.10.0"
-indexmap = { version = "1.6.1", features = ["serde-1"]}
+indexmap = { version = "1.6.2", features = ["serde-1"]}
 
 [lib]
 name = "stardust_db"
@@ -21,3 +21,7 @@ path = "src/lib.rs"
 
 [[example]]
 name = "cli"
+
+[[bin]]
+name = "stardust_test"
+path = "src/stardust_test.rs"

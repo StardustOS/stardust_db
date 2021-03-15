@@ -1,4 +1,4 @@
-use crate::data_types::Type;
+use crate::data_types::{Type, Value};
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -13,6 +13,8 @@ pub enum Error {
     Execution(#[from] ExecutionError),
     #[error("serialization error: {0}")]
     Serialization(#[from] bincode::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -41,4 +43,8 @@ pub enum ExecutionError {
     NoColumn(String),
     #[error("ambiguous column name: {0}")]
     AmbiguousName(String),
+    #[error("NOT NULL constraint on column `{0}` failed")]
+    NullConstraintFailed(String),
+    #[error("UNIQUE constraint on column `{0}` failed with value `{1}`")]
+    UniqueConstraintFailed(String, Value),
 }
