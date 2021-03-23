@@ -17,11 +17,23 @@ pub enum SqlQuery {
 pub struct CreateTable {
     pub name: String,
     pub columns: Vec<Column>,
+    pub uniques: Vec<(Vec<usize>, String)>,
+    pub primary_key_name: String,
 }
 
 impl CreateTable {
-    pub fn new(name: String, columns: Vec<Column>) -> Self {
-        Self { name, columns }
+    pub fn new(
+        name: String,
+        columns: Vec<Column>,
+        uniques: Vec<(Vec<usize>, String)>,
+        primary_key_name: String,
+    ) -> Self {
+        Self {
+            name,
+            columns,
+            uniques,
+            primary_key_name,
+        }
     }
 }
 
@@ -31,7 +43,7 @@ pub struct Column {
     pub data_type: Type,
     pub default: Option<Expression>,
     pub not_null: bool,
-    pub unique: bool,
+    pub primary_key: bool,
 }
 
 impl Column {
@@ -40,21 +52,21 @@ impl Column {
         data_type: Type,
         default: Option<Expression>,
         not_null: bool,
-        unique: bool,
+        primary_key: bool,
     ) -> Self {
         Self {
             name,
             data_type,
             default,
             not_null,
-            unique,
+            primary_key,
         }
     }
 }
 
 #[derive(Debug)]
 pub struct Insert {
-    pub table: String,
+    pub table: TableName,
     pub columns: Option<Vec<String>>,
     pub values: SelectQuery,
 }
@@ -62,7 +74,7 @@ pub struct Insert {
 impl Insert {
     pub fn new(table: String, columns: Option<Vec<String>>, values: SelectQuery) -> Self {
         Self {
-            table,
+            table: TableName::new(table, None),
             columns,
             values,
         }
@@ -123,6 +135,7 @@ pub enum BinaryOp {
 #[derive(Debug)]
 pub enum ComparisonOp {
     Eq,
+    NotEq,
     Gt,
     Lt,
     GtEq,
@@ -146,6 +159,7 @@ impl std::fmt::Display for ComparisonOp {
             "{}",
             match self {
                 ComparisonOp::Eq => "=",
+                ComparisonOp::NotEq => "<>",
                 ComparisonOp::Gt => ">",
                 ComparisonOp::Lt => "<",
                 ComparisonOp::GtEq => ">=",
@@ -158,14 +172,14 @@ impl std::fmt::Display for ComparisonOp {
 #[derive(Debug)]
 pub struct SelectContents {
     pub projections: Vec<Projection>,
-    pub from: TableJoins,
+    pub from: Option<TableJoins>,
     pub selection: Option<Expression>,
 }
 
 impl SelectContents {
     pub fn new(
         projections: Vec<Projection>,
-        from: TableJoins,
+        from: Option<TableJoins>,
         selection: Option<Expression>,
     ) -> Self {
         Self {
@@ -185,14 +199,39 @@ pub enum Projection {
 }
 
 #[derive(Debug)]
-pub struct TableJoins {
-    pub tables: String,
+pub enum TableJoins {
+    Table(TableName),
+    Join {
+        left: Box<TableJoins>,
+        right: Box<TableJoins>,
+        operator: JoinOperator,
+        constraint: JoinConstraint,
+    },
 }
 
-impl TableJoins {
-    pub fn new(tables: String) -> Self {
-        Self { tables }
+#[derive(Debug)]
+pub struct TableName {
+    pub name: String,
+    pub alias: Option<String>,
+}
+
+impl TableName {
+    pub fn new(name: String, alias: Option<String>) -> Self {
+        Self { name, alias }
     }
+}
+
+#[derive(Debug)]
+pub enum JoinOperator {
+    Inner,
+    Left,
+    Right,
+}
+
+#[derive(Debug)]
+pub enum JoinConstraint {
+    On(Expression),
+    None,
 }
 
 #[derive(Debug)]
@@ -220,3 +259,4 @@ impl Delete {
         }
     }
 }
+

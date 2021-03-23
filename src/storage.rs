@@ -36,11 +36,12 @@ impl ColumnName {
 
 impl std::fmt::Display for ColumnName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(table_name) = &self.table_name {
+        /*if let Some(table_name) = &self.table_name {
             write!(f, "{}.{}", table_name, self.column_name)
         } else {
             write!(f, "{}", self.column_name)
-        }
+        }*/
+        write!(f, "{}", self.column_name)
     }
 }
 
@@ -116,7 +117,7 @@ impl Columns {
     }
 
     fn last_unsized_position(&self) -> usize {
-        assert!(self.sized_count > 0);
+        assert!(self.unsized_count > 0);
         (self.unsized_count - 1) * size_of::<u16>()
     }
 
@@ -139,7 +140,7 @@ impl Columns {
         index
     }
 
-    pub fn generate_row<I>(&self, data: I) -> Result<Vec<u8>>
+    pub fn generate_row<I>(&self, data: I, row: &mut Vec<u8>) -> Result<()>
     where
         I: ExactSizeIterator<Item = Value>,
     {
@@ -150,12 +151,13 @@ impl Columns {
             }));
         }
         let bitmask_size = self.bitmask_size();
-        let mut row = vec![0; self.bitmask_start() + bitmask_size];
-        let bitmask_start = self.bitmask_start();
+        let row_offset = row.len();
+        row.extend(std::iter::repeat(0).take(self.bitmask_start() + bitmask_size));
+        let bitmask_start = row_offset + self.bitmask_start();
 
         for (&entry, value) in self.columns.iter().zip(data) {
             let contents = entry.get_type().resolve_value(value);
-            let pos = entry.position();
+            let pos = row_offset + entry.position();
             if let Some(size) = entry.get_type().size() {
                 if let Some(contents) = contents {
                     let (index, bit) = entry.bitmask_index();
@@ -163,18 +165,16 @@ impl Columns {
                     let (bytes, _) = contents.encode();
                     row[pos..pos + size].copy_from_slice(bytes.as_ref());
                 } // Otherwise value and bitmask is 0
-            } else {
-                if let Some(contents) = contents {
-                    let (bytes, _) = contents.encode();
-                    append_unsized(self.sized_len + pos, bytes.as_ref(), &mut row);
-                } // Otherwise dictionary entry is 0
-            }
+            } else if let Some(contents) = contents {
+                let (bytes, _) = contents.encode();
+                append_unsized(self.sized_len + pos, bytes.as_ref(), row, row_offset);
+            } // Otherwise dictionary entry is 0
         }
         println!("{:?}", row);
-        Ok(row)
+        Ok(())
     }
 
-    pub fn get_data<'a>(&self, index: usize, row: &'a [u8]) -> Result<Value> {
+    pub fn get_data(&self, index: usize, row: &[u8]) -> Result<Value> {
         let entry = self
             .columns
             .get(index)
@@ -190,25 +190,25 @@ impl Columns {
                 entry
                     .get_type()
                     .decode(bytes)
-                    .map(|contents| Value::TypedValue(contents))
+                    .map(Value::TypedValue)
             }
         } else {
             let position = self.sized_len + entry.position();
-            if &row[position..position + size_of::<u16>()] == &[0u8; size_of::<u16>()] {
+            if row[position..position + size_of::<u16>()] == [0u8; size_of::<u16>()] {
                 Ok(Value::Null)
             } else {
                 let bytes = get_unsized_data(position, self.last_unsized_position(), row);
                 entry
                     .get_type()
                     .decode(bytes)
-                    .map(|contents| Value::TypedValue(contents))
+                    .map(Value::TypedValue)
             }
         }
     }
 }
 
-fn append_unsized(dictionary_position: usize, bytes: &[u8], row: &mut Vec<u8>) {
-    let data_position = (row.len() as u16).to_be_bytes();
+fn append_unsized(dictionary_position: usize, bytes: &[u8], row: &mut Vec<u8>, row_offset: usize) {
+    let data_position = ((row.len() - row_offset) as u16).to_be_bytes();
     row[dictionary_position..dictionary_position + size_of::<u16>()]
         .copy_from_slice(&data_position);
     row.extend_from_slice(bytes.as_ref());
@@ -235,3 +235,4 @@ fn get_unsized_data(dictionary_position: usize, end_position: usize, row: &[u8])
         u16::from_be_bytes(row[dictionary_position..next_start].try_into().unwrap()) as usize;
     &row[data_position..end]
 }
+

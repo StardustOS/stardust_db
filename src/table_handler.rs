@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{mem::size_of, sync::Arc};
 
 use sled::{IVec, Tree};
 
@@ -6,7 +6,7 @@ use crate::{
     ast::Expression,
     error::{Error, ExecutionError, Result},
     interpreter::resolve_expression,
-    Row, TableColumns,
+    GetData, TableColumns,
 };
 use crate::{data_types::Value, storage::ColumnName, table_definition::TableDefinition};
 
@@ -14,14 +14,21 @@ pub struct TableHandler {
     tree: Tree,
     table_definition: TableDefinition,
     table_name: Arc<str>,
+    alias: Option<String>,
 }
 
 impl TableHandler {
-    pub fn new(tree: Tree, table_definition: TableDefinition, table_name: String) -> Self {
+    pub fn new(
+        tree: Tree,
+        table_definition: TableDefinition,
+        table_name: String,
+        alias: Option<String>,
+    ) -> Self {
         Self {
             tree,
             table_definition,
             table_name: table_name.into(),
+            alias,
         }
     }
 
@@ -33,12 +40,29 @@ impl TableHandler {
         self.table_definition.column_names()
     }
 
-    pub fn table_name(&self) -> Arc<str> {
-        self.table_name.clone()
+    pub fn table_name(&self) -> &str {
+        self.table_name.as_ref()
     }
 
     pub fn iter(&self) -> TableIter {
         TableIter::new(self.tree.clone())
+    }
+
+    pub fn insert_values(&self, values: Vec<Value>) -> Result<()> {
+        self.table_definition.insert_values(&self.tree, values)
+    }
+
+    pub fn num_columns(&self) -> usize {
+        self.table_definition.num_columns()
+    }
+
+    pub fn get_default(&self, column_name: &str) -> Result<Value> {
+        self.table_definition.get_default(column_name)
+    }
+
+    pub fn aliased_table_name(&self) -> &str {
+        self.alias.as_deref()
+            .unwrap_or_else(|| self.table_name.as_ref())
     }
 }
 
@@ -55,7 +79,7 @@ impl TableIter {
         }
     }
 
-    pub fn next(&mut self) -> Result<Option<TableRow>> {
+    pub fn get_next(&mut self) -> Result<Option<TableRow>> {
         Ok(self
             .iter
             .next()
@@ -68,8 +92,8 @@ impl TableIter {
         predicate: &Expression,
         handler: &TableHandler,
     ) -> Result<Option<TableRow>> {
-        while let Some(next) = self.next()? {
-            if resolve_expression(predicate, &next, handler)?
+        while let Some(next) = self.get_next()? {
+            if resolve_expression(predicate, &(handler, &next))?
                 .get_truth()
                 .is_true()
             {
@@ -79,12 +103,17 @@ impl TableIter {
         Ok(None)
     }
 
-    pub fn reset_next(&mut self) -> Result<Option<TableRow>> {
+    pub fn reset(&mut self) {
         self.iter = self.tree.iter();
-        self.next()
+    }
+
+    pub fn reset_next(&mut self) -> Result<Option<TableRow>> {
+        self.reset();
+        self.get_next()
     }
 }
 
+#[derive(Default, Clone)]
 pub struct TableRow {
     left: IVec,
     right: IVec,
@@ -99,18 +128,42 @@ impl TableRow {
         handler.tree.remove(self.left.as_ref())?;
         Ok(())
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.left.is_empty() && self.right.is_empty()
+    }
 }
 
-impl Row for TableRow {
-    type Handler = TableHandler;
+impl TableColumns for TableHandler {
+    fn resolve_name(&self, name: ColumnName) -> Result<ColumnName> {
+        let this_name = self.aliased_table_name();
+        if let Some(table) = name.table_name() {
+            if this_name == table && self.table_definition.contains_column(name.column_name()) {
+                return Ok(name);
+            }
+        } else if self.table_definition.contains_column(name.column_name()) {
+            return Ok(ColumnName::new(
+                Some(this_name.to_string()),
+                name.destructure().1,
+            ));
+        }
+        Err(Error::Execution(ExecutionError::NoColumn(name.to_string())))
+    }
+}
 
-    fn get_data(&self, handler: &TableHandler, column_name: &ColumnName) -> Result<Value> {
+impl<'a> GetData for (&'a TableHandler, &'a TableRow) {
+    fn get_data(&self, column_name: &ColumnName) -> Result<Value> {
+        let (handler, row) = self;
+        if row.left.is_empty() && row.right.is_empty() {
+            return Ok(Value::Null);
+        }
+
         if let Some(table_name) = column_name.table_name() {
-            if table_name == handler.table_name.as_ref() {
+            if table_name == handler.aliased_table_name() {
                 handler.table_definition.get_data(
                     column_name.column_name(),
-                    &self.left,
-                    &self.right,
+                    &row.left[size_of::<u64>()..],
+                    &row.right,
                 )
             } else {
                 Err(Error::Internal(format!(
@@ -127,20 +180,3 @@ impl Row for TableRow {
     }
 }
 
-impl TableColumns for TableHandler {
-    fn resolve_name(&self, name: ColumnName) -> Result<ColumnName> {
-        if let Some(table) = name.table_name() {
-            if self.table_name.as_ref() == table
-                && self.table_definition.contains_column(name.column_name())
-            {
-                return Ok(name);
-            }
-        } else if self.table_definition.contains_column(name.column_name()) {
-            return Ok(ColumnName::new(
-                Some(self.table_name.to_string()),
-                name.destructure().1,
-            ));
-        }
-        Err(Error::Execution(ExecutionError::NoColumn(name.to_string())))
-    }
-}

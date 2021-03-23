@@ -4,9 +4,8 @@ use stardust_db::error::Result;
 fn main() {
     //std::io::stdout().flush().unwrap();
     // _ = std::io::stdout();
-    match get_results() {
-        Err(e) => println!("Error: {}", e),
-        _ => (),
+    if let Err(e) =  get_results() {
+        println!("Error: {}", e)
     }
 }
 

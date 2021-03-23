@@ -153,11 +153,16 @@ impl Comparison {
         }
         match op {
             ComparisonOp::Eq => matches!(self, Self::Equal).into(),
+            ComparisonOp::NotEq => matches!(self, Self::GreaterThan | Self::LessThan).into(),
             ComparisonOp::Gt => matches!(self, Self::GreaterThan).into(),
             ComparisonOp::Lt => matches!(self, Self::LessThan).into(),
             ComparisonOp::GtEq => matches!(self, Self::Equal | Self::GreaterThan).into(),
             ComparisonOp::LtEq => matches!(self, Self::Equal | Self::LessThan).into(),
         }
+    }
+
+    pub fn is_equal(&self) -> bool {
+        matches!(self, Comparison::Equal)
     }
 }
 
@@ -240,12 +245,24 @@ impl Value {
             (_, Self::TruthValue(t)) => self.compare(&Self::TruthValue(*t).cast(&Type::Integer)),
         }
     }
+
+    pub fn compare_slices(this: &[Value], other: &[Value]) -> bool {
+        if this.len() != other.len() {
+            return false;
+        }
+        for (l, r) in this.iter().zip(other.iter()) {
+            if !l.compare(r).is_equal() {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Value::Null => Ok(()),
+            Value::Null => write!(f, "NULL"),
             Value::TypedValue(t) => write!(f, "{}", t),
             Value::TruthValue(t) => write!(
                 f,
@@ -253,7 +270,7 @@ impl std::fmt::Display for Value {
                 match t {
                     TruthValue::True => "1",
                     TruthValue::False => "0",
-                    TruthValue::Unknown => "",
+                    TruthValue::Unknown => "NULL",
                 }
             ),
         }
@@ -303,10 +320,7 @@ impl TruthValue {
     }
 
     pub fn is_true(self) -> bool {
-        match self {
-            Self::True => true,
-            _ => false,
-        }
+        matches!(self, Self::True)
     }
 }
 
@@ -345,3 +359,4 @@ impl From<TruthValue> for Value {
         Value::TruthValue(t)
     }
 }
+

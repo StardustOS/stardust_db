@@ -1,4 +1,4 @@
-use std::{collections::HashSet, convert::TryInto};
+use std::{convert::TryInto, mem::size_of};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -20,17 +20,23 @@ enum Position {
 pub struct TableDefinition {
     mappings: IndexMap<String, (Position, usize, Value)>,
     columns: TreeEntry,
-    not_nulls: HashSet<usize>,
-    uniques: HashSet<usize>,
+    not_nulls: Vec<usize>,
+    uniques: Vec<(Vec<usize>, String)>,
+    primary_key_name: String,
 }
 
 impl TableDefinition {
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn with_capacity(
+        capacity: usize,
+        uniques: Vec<(Vec<usize>, String)>,
+        primary_key_name: String,
+    ) -> Self {
         Self {
             mappings: IndexMap::with_capacity(capacity),
             columns: TreeEntry::Right(Columns::with_capacity(capacity)),
-            not_nulls: HashSet::new(),
-            uniques: HashSet::new(),
+            not_nulls: Vec::new(),
+            uniques,
+            primary_key_name,
         }
     }
 
@@ -39,7 +45,6 @@ impl TableDefinition {
         name: String,
         default: Option<Value>,
         not_null: bool,
-        unique: bool,
         primary_key: bool,
         data_type: Type,
     ) -> Result<Self> {
@@ -74,10 +79,7 @@ impl TableDefinition {
         self.mappings
             .insert(name, (position, index, default.unwrap_or_default()));
         if not_null {
-            self.not_nulls.insert(value_index);
-        }
-        if unique {
-            self.uniques.insert(value_index);
+            self.not_nulls.push(value_index);
         }
 
         Ok(self)
@@ -111,6 +113,19 @@ impl TableDefinition {
         self.columns.get_data(index, position, left, right)
     }
 
+    fn get_data_by_index<'a>(
+        &self,
+        index: usize,
+        left: &'a [u8],
+        right: &'a [u8],
+    ) -> Result<Value> {
+        let (_, &(position, index, _)) = self
+            .mappings
+            .get_index(index)
+            .ok_or_else(|| Error::Internal(format!("No column for index {}", index)))?;
+        self.columns.get_data(index, position, left, right)
+    }
+
     pub fn column_names(&self) -> impl Iterator<Item = &str> {
         self.mappings.keys().map(|c| c.as_ref())
     }
@@ -123,13 +138,6 @@ impl TableDefinition {
         Ok(name.as_str())
     }
 
-    fn get_value_index(&self, index: usize) -> Result<(Position, usize)> {
-        self.mappings
-            .get_index(index)
-            .map(|(_, (position, index, _))| (*position, *index))
-            .ok_or_else(|| Error::Internal(format!("No mapping for index {}", index)))
-    }
-
     fn check_row(&self, tree: &Tree, row: &[Value]) -> Result<()> {
         for &i in &self.not_nulls {
             if row[i].is_null() {
@@ -140,22 +148,28 @@ impl TableDefinition {
         }
         for tree_row in tree.iter() {
             let (left, right) = tree_row?;
-            for &i in &self.uniques {
-                let (position, index) = self.get_value_index(i)?;
-                let value =
-                    self.columns
-                        .get_data(index, position, left.as_ref(), right.as_ref())?;
-                if row[i]
-                    .compare(&value)
-                    .get_truth(&crate::ast::ComparisonOp::Eq)
-                    .is_true()
-                {
-                    return Err(ExecutionError::UniqueConstraintFailed(
-                        self.column_name(i)?.to_owned(),
-                        value,
-                    )
-                    .into());
+            for (unique_set, name) in &self.uniques {
+                let tree_row_unique = unique_set
+                    .iter()
+                    .map(|&index| self.get_data_by_index(index, &left, &right))
+                    .collect::<Result<Vec<_>>>()?;
+                if !Value::compare_slices(row, tree_row_unique.as_slice()) {
+                    return Err(ExecutionError::UniqueConstraintFailed(name.clone()).into());
                 }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_primary(&self, tree: &Tree, key: &[u8]) -> Result<()> {
+        for tree_row in tree.iter() {
+            let (left, _) = tree_row?;
+            let start_offset = left.len().saturating_sub(key.len());
+            let left_bytes = &left[start_offset..];
+            if key == left_bytes {
+                return Err(
+                    ExecutionError::UniqueConstraintFailed(self.primary_key_name.clone()).into(),
+                );
             }
         }
         Ok(())
@@ -163,16 +177,20 @@ impl TableDefinition {
 
     pub fn insert_values(&self, tree: &Tree, values: Vec<Value>) -> Result<()> {
         self.check_row(tree, &values)?;
+        let key = generate_next_index(tree)?;
         match &self.columns {
             TreeEntry::Right(c) => {
-                let key = generate_next_index(tree)?;
-                let value = c.generate_row(values.into_iter())?;
+                let mut value = Vec::new();
+                c.generate_row(values.into_iter(), &mut value)?;
                 tree.insert(key, value)?;
             }
             TreeEntry::Both(l, r) => {
                 let mut iter = values.into_iter();
-                let key = l.generate_row(iter.by_ref().take(l.len()))?;
-                let value = r.generate_row(iter)?;
+                let mut key = key.into();
+                l.generate_row(iter.by_ref().take(l.len()), &mut key)?;
+                self.check_primary(tree, &key[size_of::<u64>()..])?;
+                let mut value = Vec::new();
+                r.generate_row(iter, &mut value)?;
                 tree.insert(key, value)?;
             }
         }
@@ -191,9 +209,10 @@ impl TableDefinition {
 fn generate_next_index(tree: &Tree) -> Result<[u8; 8]> {
     if let Some((last_key, _)) = tree.last()? {
         let bytes = last_key
-            .as_ref()
+            .get(..size_of::<u64>())
+            .ok_or_else(|| Error::Internal("Key is wrong number of bytes".to_owned()))?
             .try_into()
-            .map_err(|_| Error::Internal("Key is wrong number of bytes".to_owned()))?;
+            .unwrap();
         let value = u64::from_be_bytes(bytes) + 1;
         Ok(value.to_be_bytes())
     } else {
@@ -233,3 +252,4 @@ impl TreeEntry {
         }
     }
 }
+

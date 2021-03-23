@@ -27,7 +27,7 @@ fn get_results() -> Result<()> {
                     print!("{}", result)
                 }
             }
-            Err(e) => println!("Error: {}", e),
+            Err(e) => println!("{}", e),
         }
     }
     Ok(())

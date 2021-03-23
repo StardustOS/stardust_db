@@ -5,7 +5,7 @@ use std::{
 };
 
 use data_types::Value;
-use error::Result;
+use error::{ExecutionError, Result};
 use interpreter::{Interpreter, Relation};
 use query_process::process_query;
 use sqlparser::{dialect::GenericDialect, parser::Parser};
@@ -37,7 +37,7 @@ impl Database {
         let statements = Parser::parse_sql(&dialect, &sql)?;
         let mut results = Vec::with_capacity(statements.len());
         for statement in statements {
-            let processed_query = process_query(dbg!(statement));
+            let processed_query = process_query(statement)?;
             results.push(self.interpreter.execute(processed_query)?)
         }
         Ok(results)
@@ -54,28 +54,35 @@ pub struct Db {
 }
 
 #[no_mangle]
-pub extern "C" fn open_database(path: *const c_char, db: *mut Db) -> c_int {
-    unsafe {
-        let path = CStr::from_ptr(path);
-        let path = match path.to_str() {
-            Ok(path) => path,
-            Err(_) => return STARDUST_DB_INVALID_PATH_UTF_8,
-        };
-        let mut database = match Database::open(path) {
-            Ok(db) => db,
-            Err(_) => return STARDUST_DB_INVALID_PATH_LOCATION,
-        };
-        *db = Db {
-            database: &mut database,
-        }
-    }
+pub unsafe extern "C" fn open_database(path: *const c_char, db: *mut Db) -> c_int {
+    let path = CStr::from_ptr(path);
+    let path = match path.to_str() {
+        Ok(path) => path,
+        Err(_) => return STARDUST_DB_INVALID_PATH_UTF_8,
+    };
+    let mut database = match Database::open(path) {
+        Ok(db) => db,
+        Err(_) => return STARDUST_DB_INVALID_PATH_LOCATION,
+    };
+    *db = Db {
+        database: &mut database,
+    };
     STARDUST_DB_OK
 }
-pub trait Row {
-    type Handler;
 
-    fn get_data(&self, handler: &Self::Handler, column_name: &ColumnName) -> Result<Value>;
+pub trait GetData {
+    fn get_data(&self, column_name: &ColumnName) -> Result<Value>;
 }
+
+pub struct EmptyRow;
+
+impl GetData for EmptyRow {
+    fn get_data(&self, column_name: &ColumnName) -> Result<Value> {
+        Err(ExecutionError::NoColumn(column_name.to_string()).into())
+    }
+}
+
 pub trait TableColumns {
     fn resolve_name(&self, name: ColumnName) -> Result<ColumnName>;
 }
+
