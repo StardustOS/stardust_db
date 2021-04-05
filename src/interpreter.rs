@@ -66,14 +66,12 @@ impl Interpreter {
             data_type,
             default,
             not_null,
-            primary_key,
         } in columns.into_iter()
         {
             let default = default
                 .map(|d| resolve_expression(&d, &EmptyRow))
                 .transpose()?;
-            table_definition =
-                table_definition.add_column(name, default, not_null, primary_key, data_type)?;
+            table_definition.add_column(name, default, not_null, data_type)?;
         }
         let encoded: Vec<u8> = bincode::serialize(&table_definition)?;
         directory.insert(table_name.clone().into_bytes(), encoded)?;
@@ -342,4 +340,3 @@ where
         }
     }
 }
-

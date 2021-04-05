@@ -2,9 +2,8 @@ use stardust_db::{error::Result, Database};
 use std::io::{self, Write};
 
 fn main() {
-    match get_results() {
-        Err(e) => println!("Error opening database: {}", e),
-        _ => (),
+    if let Err(e) = get_results() {
+        println!("Error opening database: {}", e)
     }
 }
 

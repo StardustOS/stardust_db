@@ -4,7 +4,7 @@ use stardust_db::error::Result;
 fn main() {
     //std::io::stdout().flush().unwrap();
     // _ = std::io::stdout();
-    if let Err(e) =  get_results() {
+    if let Err(e) = get_results() {
         println!("Error: {}", e)
     }
 }

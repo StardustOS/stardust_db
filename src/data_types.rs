@@ -359,4 +359,3 @@ impl From<TruthValue> for Value {
         Value::TruthValue(t)
     }
 }
-

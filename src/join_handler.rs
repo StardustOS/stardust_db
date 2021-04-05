@@ -1,5 +1,7 @@
 use std::iter;
 
+use auto_enums::auto_enum;
+
 use crate::{
     ast::{Expression, JoinConstraint, JoinOperator, TableJoins},
     data_types::Value,
@@ -24,17 +26,14 @@ impl JoinHandler {
         })
     }
 
-    pub fn all_column_names(&self) -> Result<Box<dyn Iterator<Item = ColumnName> + '_>> {
+    pub fn all_column_names(&self) -> Result<impl Iterator<Item = ColumnName> + '_> {
         match self {
             Self::Join(join) => Ok(join.all_column_names()),
             Self::Empty => Err(ExecutionError::NoTables.into()),
         }
     }
 
-    pub fn column_names(
-        &self,
-        table_name: &str,
-    ) -> Result<Box<dyn Iterator<Item = ColumnName> + '_>> {
+    pub fn column_names(&self, table_name: &str) -> Result<impl Iterator<Item = ColumnName> + '_> {
         match self {
             JoinHandler::Join(join) => join.column_names(table_name),
             JoinHandler::Empty => Err(ExecutionError::NoTables.into()),
@@ -143,22 +142,26 @@ impl Join {
         })
     }
 
-    fn table_iter(&self) -> Box<dyn Iterator<Item = &TableHandler> + '_> {
+    #[auto_enum(Iterator)]
+    fn table_iter(&self) -> impl Iterator<Item = &TableHandler> + '_ {
         match self {
-            Join::Table(table) => Box::new(iter::once(table)),
-            Join::Join { left, right, .. } => Box::new(left.table_iter().chain(right.table_iter())),
+            Join::Table(table) => iter::once(table),
+            Join::Join { left, right, .. } => {
+                Box::new(left.table_iter().chain(right.table_iter())) as Box<dyn Iterator<Item = _>>
+            }
         }
     }
 
-    pub fn table_names(&self) -> Box<dyn Iterator<Item = &str> + '_> {
-        Box::new(self.table_iter().map(|t| t.table_name()))
+    pub fn table_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.table_iter().map(|t| t.aliased_table_name())
     }
 
-    pub fn all_column_names(&self) -> Box<dyn Iterator<Item = ColumnName> + '_> {
-        Box::new(self.table_iter().flat_map(|t| {
-            t.column_names()
-                .map(move |c| ColumnName::new(Some(t.table_name().to_owned()), c.to_owned()))
-        }))
+    pub fn all_column_names(&self) -> impl Iterator<Item = ColumnName> + '_ {
+        self.table_iter().flat_map(|t| {
+            t.column_names().map(move |c| {
+                ColumnName::new(Some(t.aliased_table_name().to_owned()), c.to_owned())
+            })
+        })
     }
 
     pub fn column_names<'a>(
@@ -193,7 +196,7 @@ impl Join {
 
     pub fn has_table(&self, table_name: &str) -> bool {
         match self {
-            Join::Table(table) => table.table_name() == table_name,
+            Join::Table(table) => table.aliased_table_name() == table_name,
             Join::Join { left, right, .. } => {
                 left.has_table(table_name) || right.has_table(table_name)
             }
@@ -651,4 +654,3 @@ impl TableColumns for (&Join, &Join) {
         }
     }
 }
-

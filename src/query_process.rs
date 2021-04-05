@@ -67,7 +67,7 @@ pub fn process_query(statement: Statement) -> Result<SqlQuery> {
             partitioned,
             after_columns,
             table,
-        )),
+        )?),
         Statement::Drop {
             object_type,
             if_exists,
@@ -75,7 +75,7 @@ pub fn process_query(statement: Statement) -> Result<SqlQuery> {
             cascade,
             purge,
         } => SqlQuery::DropTable(parse_drop(object_type, if_exists, names, cascade, purge)),
-        Statement::Query(q) => SqlQuery::SelectQuery(parse_select_query(*q)),
+        Statement::Query(q) => SqlQuery::SelectQuery(parse_select_query(*q)?),
         Statement::Delete {
             table_name,
             selection,
@@ -112,7 +112,6 @@ fn parse_create_table(
         .map(|(index, c)| {
             let mut default = None;
             let mut not_null = false;
-            let mut primary_key = false;
             let ColumnDef {
                 name,
                 data_type,
@@ -130,16 +129,15 @@ fn parse_create_table(
                                     table_name.clone(),
                                 )));
                             } else {
-                                primary_key = true;
                                 primary_key_name = Some(name.to_string());
+                                not_null = true;
                             }
-                        } else {
-                            let name = column_option
-                                .name
-                                .map(|n| n.to_string())
-                                .unwrap_or_else(|| name.to_string());
-                            uniques.push((vec![index], name));
                         }
+                        let name = column_option
+                            .name
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| name.to_string());
+                        uniques.push((vec![index], name));
                     }
                     _ => unimplemented!("{:?}", column_option.option),
                 }
@@ -149,7 +147,6 @@ fn parse_create_table(
                 convert_data_type(data_type),
                 default,
                 not_null,
-                primary_key,
             ))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -167,15 +164,15 @@ fn parse_create_table(
                         )));
                     } else {
                         primary_key_name =
-                            Some(name.map(|n| n.to_string()).unwrap_or_else(|| {
+                            Some(name.clone().map(|n| n.to_string()).unwrap_or_else(|| {
                                 columns.iter().map(|c| c.to_string()).join(", ")
                             }));
-                        for column in columns {
+                        for column in &columns {
                             let column_name = column.to_string();
                             if let Some(column) =
                                 table_columns.iter_mut().find(|c| c.name == column_name)
                             {
-                                column.primary_key = true;
+                                column.not_null = true;
                             } else {
                                 return Err(Error::Execution(ExecutionError::NoColumn(
                                     column_name,
@@ -183,24 +180,22 @@ fn parse_create_table(
                             }
                         }
                     }
-                } else {
-                    let name = name
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|| columns.iter().map(|c| c.to_string()).join(", "));
-                    let unique_set = columns
-                        .into_iter()
-                        .map(|column| {
-                            let column_name = column.to_string();
-                            table_columns
-                                .iter()
-                                .position(|c| c.name == column_name)
-                                .ok_or(
-                                    Error::Execution(ExecutionError::NoColumn(column_name))
-                                )
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    uniques.push((unique_set, name));
                 }
+
+                let name = name
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| columns.iter().map(|c| c.to_string()).join(", "));
+                let unique_set = columns
+                    .into_iter()
+                    .map(|column| {
+                        let column_name = column.to_string();
+                        table_columns
+                            .iter()
+                            .position(|c| c.name == column_name)
+                            .ok_or(Error::Execution(ExecutionError::NoColumn(column_name)))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                uniques.push((unique_set, name));
             }
             _ => unimplemented!("{:?}", constraint),
         }
@@ -223,29 +218,29 @@ fn parse_insert(
     _partitioned: Option<Vec<Expr>>,
     _after_columns: Vec<Ident>,
     _table: bool,
-) -> Insert {
+) -> Result<Insert> {
     let columns = if columns.is_empty() {
         None
     } else {
         Some(columns.into_iter().map(|c| c.to_string()).collect())
     };
-    Insert::new(
+    Ok(Insert::new(
         table_name.to_string(),
         columns,
-        parse_select_query(*source),
-    )
+        parse_select_query(*source)?,
+    ))
 }
 
-fn parse_select_query(query: Query) -> SelectQuery {
-    match query.body {
+fn parse_select_query(query: Query) -> Result<SelectQuery> {
+    Ok(match query.body {
         SetExpr::Values(v) => SelectQuery::Values(Values::new(
             v.0.into_iter()
                 .map(|row| row.into_iter().map(parse_expression).collect())
                 .collect(),
         )),
-        SetExpr::Select(s) => SelectQuery::Select(parse_select(*s)),
+        SetExpr::Select(s) => SelectQuery::Select(parse_select(*s)?),
         _ => unimplemented!("{:?}", query.body),
-    }
+    })
 }
 
 fn parse_expression(expression: Expr) -> Expression {
@@ -308,7 +303,7 @@ fn parse_value(value: Value) -> crate::data_types::Value {
     }
 }
 
-fn parse_select(select: Select) -> SelectContents {
+fn parse_select(select: Select) -> Result<SelectContents> {
     let projections = select
         .projection
         .into_iter()
@@ -321,24 +316,33 @@ fn parse_select(select: Select) -> SelectContents {
             SelectItem::QualifiedWildcard(name) => Projection::QualifiedWildcard(name.to_string()),
         })
         .collect();
-    let from = parse_table_joins(select.from.into_iter());
+    let from = parse_table_joins(select.from.into_iter())?;
     let selection = select.selection.map(parse_expression);
-    SelectContents::new(projections, from, selection)
+    Ok(SelectContents::new(projections, from, selection))
 }
 
-fn parse_table_joins(mut joins: impl Iterator<Item = TableWithJoins>) -> Option<TableJoins> {
+fn parse_table_joins<I>(mut joins: I) -> Result<Option<TableJoins>>
+where
+    I: Iterator<Item = TableWithJoins>,
+{
     joins
         .next()
-        .map(|left| parse_table_joins_recursive(parse_with_join(left), joins))
+        .map(|left| parse_table_joins_recursive(parse_with_join(left)?, joins))
+        .transpose()
 }
 
-fn parse_table_joins_recursive(
-    left: TableJoins,
-    mut joins: impl Iterator<Item = TableWithJoins>,
-) -> TableJoins {
+fn parse_table_joins_recursive<I>(left: TableJoins, mut joins: I) -> Result<TableJoins>
+where
+    I: Iterator<Item = TableWithJoins>,
+{
     match joins.next() {
         Some(right) => {
-            let right = parse_with_join(right);
+            let right = parse_with_join(right)?;
+            for name in right.table_names() {
+                if left.contains_table(name) {
+                    return Err(ExecutionError::DuplicateTableName(name.to_owned()).into());
+                }
+            }
             let new_left = TableJoins::Join {
                 left: Box::new(left),
                 right: Box::new(right),
@@ -347,36 +351,41 @@ fn parse_table_joins_recursive(
             };
             parse_table_joins_recursive(new_left, joins)
         }
-        None => left,
+        None => Ok(left),
     }
 }
 
-fn parse_with_join(join: TableWithJoins) -> TableJoins {
+fn parse_with_join(join: TableWithJoins) -> Result<TableJoins> {
     let left = parse_table_factor(join.relation);
-    parse_joins(left, join.joins.into_iter())
+    parse_joins(left?, join.joins.into_iter())
 }
 
-fn parse_table_factor(factor: TableFactor) -> TableJoins {
+fn parse_table_factor(factor: TableFactor) -> Result<TableJoins> {
     match factor {
         TableFactor::Table { name, alias, .. } => {
             let name = name.to_string();
             let alias = alias.map(|alias| alias.name.to_string());
-            TableJoins::Table(TableName::new(name, alias))
+            Ok(TableJoins::Table(TableName::new(name, alias)))
         }
         TableFactor::NestedJoin(join) => parse_with_join(*join),
         _ => unimplemented!("{:?}", factor),
     }
 }
 
-fn parse_joins(left: TableJoins, mut joins: impl Iterator<Item = Join>) -> TableJoins {
+fn parse_joins(left: TableJoins, mut joins: impl Iterator<Item = Join>) -> Result<TableJoins> {
     match joins.next() {
-        None => left,
+        None => Ok(left),
         Some(join) => {
             let Join {
                 relation,
                 join_operator,
             } = join;
-            let right = parse_table_factor(relation);
+            let right = parse_table_factor(relation)?;
+            for name in right.table_names() {
+                if left.contains_table(name) {
+                    return Err(ExecutionError::DuplicateTableName(name.to_owned()).into());
+                }
+            }
             let (operator, constraint) = match join_operator {
                 ast::JoinOperator::Inner(constraint) => {
                     (JoinOperator::Inner, parse_join_constraint(constraint))
@@ -439,4 +448,3 @@ fn convert_data_type(t: DataType) -> Type {
         _ => unimplemented!("{:?}", t),
     }
 }
-

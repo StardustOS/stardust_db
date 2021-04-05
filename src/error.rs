@@ -7,7 +7,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 pub enum Error {
     #[error("Sled error: {0}")]
     Storage(#[from] sled::Error),
-    #[error("Parse error: {0}")]
+    #[error("{0}")]
     Parse(#[from] sqlparser::parser::ParserError),
     #[error("Execution error: {0}")]
     Execution(#[from] ExecutionError),
@@ -43,9 +43,9 @@ pub enum ExecutionError {
     NoColumn(String),
     #[error("ambiguous column name: {0}")]
     AmbiguousName(String),
-    #[error("NOT NULL constraint on column `{0}` failed")]
+    #[error("NOT NULL constraint `{0}` failed")]
     NullConstraintFailed(String),
-    #[error("UNIQUE constraint on column failed{0}")]
+    #[error("UNIQUE constraint `{0}` failed")]
     UniqueConstraintFailed(String),
     #[error("multiple primary keys for table {0}")]
     MultiplePrimaryKey(String),
@@ -53,5 +53,6 @@ pub enum ExecutionError {
     NoConstraintOnJoin,
     #[error("no tables specified")]
     NoTables,
+    #[error("duplicate table name or alias `{0}`")]
+    DuplicateTableName(String),
 }
-

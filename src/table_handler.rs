@@ -1,5 +1,3 @@
-use std::{mem::size_of, sync::Arc};
-
 use sled::{IVec, Tree};
 
 use crate::{
@@ -13,7 +11,7 @@ use crate::{data_types::Value, storage::ColumnName, table_definition::TableDefin
 pub struct TableHandler {
     tree: Tree,
     table_definition: TableDefinition,
-    table_name: Arc<str>,
+    table_name: String,
     alias: Option<String>,
 }
 
@@ -27,7 +25,7 @@ impl TableHandler {
         Self {
             tree,
             table_definition,
-            table_name: table_name.into(),
+            table_name,
             alias,
         }
     }
@@ -38,10 +36,6 @@ impl TableHandler {
 
     pub fn column_names(&self) -> impl Iterator<Item = &str> {
         self.table_definition.column_names()
-    }
-
-    pub fn table_name(&self) -> &str {
-        self.table_name.as_ref()
     }
 
     pub fn iter(&self) -> TableIter {
@@ -61,8 +55,9 @@ impl TableHandler {
     }
 
     pub fn aliased_table_name(&self) -> &str {
-        self.alias.as_deref()
-            .unwrap_or_else(|| self.table_name.as_ref())
+        self.alias
+            .as_deref()
+            .unwrap_or_else(|| self.table_name.as_str())
     }
 }
 
@@ -160,11 +155,9 @@ impl<'a> GetData for (&'a TableHandler, &'a TableRow) {
 
         if let Some(table_name) = column_name.table_name() {
             if table_name == handler.aliased_table_name() {
-                handler.table_definition.get_data(
-                    column_name.column_name(),
-                    &row.left[size_of::<u64>()..],
-                    &row.right,
-                )
+                handler
+                    .table_definition
+                    .get_data(column_name.column_name(), &row.right)
             } else {
                 Err(Error::Internal(format!(
                     "Table name resolved incorrectly for Single Table Row: {}",
@@ -179,4 +172,3 @@ impl<'a> GetData for (&'a TableHandler, &'a TableRow) {
         }
     }
 }
-

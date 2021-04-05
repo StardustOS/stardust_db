@@ -85,4 +85,3 @@ impl GetData for EmptyRow {
 pub trait TableColumns {
     fn resolve_name(&self, name: ColumnName) -> Result<ColumnName>;
 }
-

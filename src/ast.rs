@@ -1,3 +1,5 @@
+use auto_enums::auto_enum;
+
 use crate::{
     data_types::{Type, Value},
     storage::ColumnName,
@@ -43,23 +45,15 @@ pub struct Column {
     pub data_type: Type,
     pub default: Option<Expression>,
     pub not_null: bool,
-    pub primary_key: bool,
 }
 
 impl Column {
-    pub fn new(
-        name: String,
-        data_type: Type,
-        default: Option<Expression>,
-        not_null: bool,
-        primary_key: bool,
-    ) -> Self {
+    pub fn new(name: String, data_type: Type, default: Option<Expression>, not_null: bool) -> Self {
         Self {
             name,
             data_type,
             default,
             not_null,
-            primary_key,
         }
     }
 }
@@ -209,6 +203,28 @@ pub enum TableJoins {
     },
 }
 
+impl TableJoins {
+    pub fn contains_table(&self, table_name: &str) -> bool {
+        match self {
+            TableJoins::Table(name) => table_name == name.aliased_name(),
+            TableJoins::Join { left, right, .. } => {
+                left.contains_table(table_name) || right.contains_table(table_name)
+            }
+        }
+    }
+
+    #[auto_enum(Iterator)]
+    pub fn table_names(&self) -> impl Iterator<Item = &str> + '_ {
+        match self {
+            TableJoins::Table(n) => std::iter::once(n.aliased_name()),
+            TableJoins::Join { left, right, .. } => {
+                Box::new(left.table_names().chain(right.table_names()))
+                    as Box<dyn Iterator<Item = _>>
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TableName {
     pub name: String,
@@ -218,6 +234,10 @@ pub struct TableName {
 impl TableName {
     pub fn new(name: String, alias: Option<String>) -> Self {
         Self { name, alias }
+    }
+
+    pub fn aliased_name(&self) -> &str {
+        self.alias.as_deref().unwrap_or_else(|| self.name.as_str())
     }
 }
 
@@ -259,4 +279,3 @@ impl Delete {
         }
     }
 }
-
