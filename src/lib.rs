@@ -20,6 +20,12 @@ pub mod query_process;
 pub mod storage;
 pub mod table_definition;
 pub mod table_handler;
+pub mod temporary_database;
+#[macro_use]
+mod utils;
+
+#[cfg(test)]
+pub mod tests;
 
 pub struct Database {
     interpreter: Interpreter,
@@ -32,7 +38,7 @@ impl Database {
         })
     }
 
-    pub fn execute_query(&mut self, sql: &str) -> Result<Vec<Relation>> {
+    pub fn execute_query(&self, sql: &str) -> Result<Vec<Relation>> {
         let dialect = GenericDialect {};
         let statements = Parser::parse_sql(&dialect, &sql)?;
         let mut results = Vec::with_capacity(statements.len());

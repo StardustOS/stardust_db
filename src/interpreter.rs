@@ -13,6 +13,7 @@ use crate::{
 use itertools::Itertools;
 use sled::{open, Db};
 use std::{
+    collections::HashSet,
     fmt::{Display, Formatter},
     path::Path,
 };
@@ -26,7 +27,7 @@ impl Interpreter {
         Ok(Interpreter { db: open(path)? })
     }
 
-    pub fn execute(&mut self, query: SqlQuery) -> Result<Relation> {
+    pub fn execute(&self, query: SqlQuery) -> Result<Relation> {
         match query {
             SqlQuery::CreateTable(create_table) => self.execute_create_table(create_table),
             SqlQuery::Insert(insert) => self.execute_insert(insert),
@@ -47,7 +48,7 @@ impl Interpreter {
         Ok(TableHandler::new(tree, table_definition, name, alias))
     }
 
-    fn execute_create_table(&mut self, create_table: CreateTable) -> Result<Relation> {
+    fn execute_create_table(&self, create_table: CreateTable) -> Result<Relation> {
         let CreateTable {
             name,
             columns,
@@ -82,7 +83,7 @@ impl Interpreter {
         Ok(Default::default())
     }
 
-    fn execute_insert(&mut self, insert: Insert) -> Result<Relation> {
+    fn execute_insert(&self, insert: Insert) -> Result<Relation> {
         let Insert {
             table,
             columns,
@@ -128,7 +129,7 @@ impl Interpreter {
         Ok(Default::default())
     }
 
-    fn execute_select(&mut self, select: SelectQuery) -> Result<Relation> {
+    fn execute_select(&self, select: SelectQuery) -> Result<Relation> {
         match select {
             SelectQuery::Select(select) => {
                 let SelectContents {
@@ -200,7 +201,7 @@ impl Interpreter {
         }
     }
 
-    fn execute_delete(&mut self, delete: Delete) -> Result<Relation> {
+    fn execute_delete(&self, delete: Delete) -> Result<Relation> {
         let Delete {
             table_name,
             predicate,
@@ -221,7 +222,7 @@ impl Interpreter {
     }
 
     fn generate_results(
-        &mut self,
+        &self,
         result_column_names: Vec<String>,
         projections: Vec<Expression>,
         table: JoinHandler,
@@ -239,7 +240,7 @@ impl Interpreter {
         Ok(result_set)
     }
 
-    fn execute_drop_table(&mut self, drop_table: DropTable) -> Result<Relation> {
+    fn execute_drop_table(&self, drop_table: DropTable) -> Result<Relation> {
         for name in drop_table.names {
             let directory = self.db.open_tree("@tables")?;
             directory.remove(name.as_bytes())?;
@@ -290,6 +291,24 @@ impl Relation {
     pub fn num_columns(&self) -> usize {
         self.column_names.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty() && self.column_names.is_empty()
+    }
+
+    pub fn assert_equals(&self, rows: HashSet<Vec<Value>>, column_names: Vec<&str>) {
+        assert_eq!(self.rows.len(), rows.len());
+
+        assert_eq!(self.column_names, column_names);
+
+        for row in &self.rows {
+            assert!(rows.contains(row));
+        }
+    }
+
+    pub fn ordered_equals(&self, rows: Vec<Vec<Value>>, column_names: Vec<&str>) -> bool {
+        self.rows == rows && self.column_names == column_names
+    }
 }
 
 impl Display for Relation {
@@ -330,11 +349,11 @@ where
             let left = resolve_expression(l, row)?;
             let right = resolve_expression(r, row)?;
             match op {
-                BinaryOp::And => Ok(Value::TruthValue(left.get_truth().and(right.get_truth()))),
-                BinaryOp::Or => Ok(Value::TruthValue(left.get_truth().or(right.get_truth()))),
+                BinaryOp::And => Ok(left.and(&right)),
+                BinaryOp::Or => Ok(left.or(&right)),
                 BinaryOp::Comparison(c) => {
                     let comparison_result = left.compare(&right);
-                    Ok(comparison_result.get_truth(c).into())
+                    Ok(comparison_result.get_value(c))
                 }
             }
         }

@@ -27,8 +27,6 @@ pub enum ExecutionError {
     ColumnExists(String),
     #[error("table `{0}` doesn't exist")]
     NoTable(String),
-    #[error("missing data for `{0}` when constructing row")]
-    NoData(String),
     #[error("incorrect type when constructing column `{column}`. Expected `{expected_type}`, found `{actual_type}`")]
     TypeError {
         column: String,

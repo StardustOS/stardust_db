@@ -204,7 +204,6 @@ impl Columns {
                 append_unsized(self.sized_len + pos, bytes.as_ref(), row, row_offset);
             } // Otherwise dictionary entry is 0
         }
-        println!("{:?}", row);
         Ok(())
     }
 

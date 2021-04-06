@@ -317,10 +317,7 @@ impl<'a> JoinIter<'a> {
     pub fn get_next(&mut self) -> Result<Option<RowValue<'_>>> {
         while self.advance()? {
             if let Some(filter) = &self.filter {
-                if resolve_expression(filter, &(&self.inner, self.buffer.as_slice()))?
-                    .get_truth()
-                    .is_true()
-                {
+                if resolve_expression(filter, &(&self.inner, self.buffer.as_slice()))?.is_true() {
                     return Ok(Some(RowValue::new(self.buffer.as_slice())));
                 }
             } else {
@@ -375,7 +372,6 @@ impl<'a> JoinIterInner<'a> {
                                 constraint,
                                 &(left.as_ref(), right.as_ref(), &*buffer),
                             )?
-                            .get_truth()
                             .is_true()
                             {
                                 return Ok(true);
@@ -407,7 +403,6 @@ impl<'a> JoinIterInner<'a> {
                                 constraint,
                                 &(left.as_ref(), right.as_ref(), &*buffer),
                             )?
-                            .get_truth()
                             .is_true()
                             {
                                 *right_has_yielded = true;
@@ -418,7 +413,6 @@ impl<'a> JoinIterInner<'a> {
                                 constraint,
                                 &(left.as_ref(), right.as_ref(), &*buffer),
                             )?
-                            .get_truth()
                             .is_true()
                             {
                                 *right_has_yielded = true;
@@ -452,7 +446,6 @@ impl<'a> JoinIterInner<'a> {
                                 constraint,
                                 &(left.as_ref(), right.as_ref(), &*buffer),
                             )?
-                            .get_truth()
                             .is_true()
                             {
                                 *left_has_yielded = true;
@@ -463,7 +456,6 @@ impl<'a> JoinIterInner<'a> {
                                 constraint,
                                 &(left.as_ref(), right.as_ref(), &*buffer),
                             )?
-                            .get_truth()
                             .is_true()
                             {
                                 *left_has_yielded = true;

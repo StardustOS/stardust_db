@@ -88,10 +88,7 @@ impl TableIter {
         handler: &TableHandler,
     ) -> Result<Option<TableRow>> {
         while let Some(next) = self.get_next()? {
-            if resolve_expression(predicate, &(handler, &next))?
-                .get_truth()
-                .is_true()
-            {
+            if resolve_expression(predicate, &(handler, &next))?.is_true() {
                 return Ok(Some(next));
             }
         }

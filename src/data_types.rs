@@ -57,16 +57,11 @@ impl Type {
         match data {
             Value::Null => None,
             Value::TypedValue(t) => Some(t.cast(self)),
-            Value::TruthValue(t) => match t {
-                TruthValue::True => Some(TypeContents::Integer(1).cast(self)),
-                TruthValue::False => Some(TypeContents::Integer(0).cast(self)),
-                TruthValue::Unknown => None,
-            },
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Hash, Eq)]
 pub enum TypeContents {
     Integer(IntegerStorage),
     String(String),
@@ -96,8 +91,8 @@ impl TypeContents {
         }
     }
 
-    pub fn get_truth(&self) -> TruthValue {
-        IntegerStorage::from(self).into()
+    pub fn is_true(&self) -> bool {
+        IntegerStorage::from(self) > 0
     }
 
     pub fn get_type(&self) -> Type {
@@ -126,11 +121,10 @@ impl From<TypeContents> for String {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub enum Value {
     Null,
     TypedValue(TypeContents),
-    TruthValue(TruthValue),
 }
 
 impl Default for Value {
@@ -147,9 +141,9 @@ pub enum Comparison {
 }
 
 impl Comparison {
-    pub fn get_truth(&self, op: &ComparisonOp) -> TruthValue {
+    pub fn get_value(&self, op: &ComparisonOp) -> Value {
         if matches!(self, Self::Unknown) {
-            return TruthValue::Unknown;
+            return Value::Null;
         }
         match op {
             ComparisonOp::Eq => matches!(self, Self::Equal).into(),
@@ -181,11 +175,6 @@ impl Value {
         match self {
             Self::Null => Self::Null,
             Self::TypedValue(contents) => Self::TypedValue(contents.cast(t)),
-            Self::TruthValue(truth) => match truth {
-                TruthValue::True => Self::TypedValue(TypeContents::Integer(1).cast(t)),
-                TruthValue::False => Self::TypedValue(TypeContents::Integer(0).cast(t)),
-                TruthValue::Unknown => Self::Null,
-            },
         }
     }
 
@@ -196,18 +185,30 @@ impl Value {
     /*pub fn get_type(&self) -> Option<Type> {
         match self {
             Self::Null => None,
-            Self::Literal(_) => None,
             Self::TypedValue(contents) => Some(contents.get_type()),
-            Self::TruthValue(_) => Some(Type::Integer)
         }
     }*/
 
-    pub fn get_truth(&self) -> TruthValue {
+    fn get_truth(&self) -> TruthValue {
         match self {
             Value::Null => TruthValue::Unknown,
-            Value::TypedValue(contents) => contents.get_truth(),
-            Value::TruthValue(t) => *t,
+            Value::TypedValue(contents) => contents.is_true().into(),
         }
+    }
+
+    pub fn is_true(&self) -> bool {
+        match self {
+            Value::Null => false,
+            Value::TypedValue(t) => t.is_true(),
+        }
+    }
+
+    pub fn and(&self, other: &Self) -> Self {
+        self.get_truth().and(other.get_truth()).into()
+    }
+
+    pub fn or(&self, other: &Self) -> Self {
+        self.get_truth().or(other.get_truth()).into()
     }
 
     pub fn compare(&self, other: &Value) -> Comparison {
@@ -241,8 +242,6 @@ impl Value {
                     i.to_string().cmp(s).into()
                 }
             }
-            (Self::TruthValue(t), _) => Self::TruthValue(*t).cast(&Type::Integer).compare(other),
-            (_, Self::TruthValue(t)) => self.compare(&Self::TruthValue(*t).cast(&Type::Integer)),
         }
     }
 
@@ -264,15 +263,6 @@ impl std::fmt::Display for Value {
         match self {
             Value::Null => write!(f, "NULL"),
             Value::TypedValue(t) => write!(f, "{}", t),
-            Value::TruthValue(t) => write!(
-                f,
-                "{}",
-                match t {
-                    TruthValue::True => "1",
-                    TruthValue::False => "0",
-                    TruthValue::Unknown => "NULL",
-                }
-            ),
         }
     }
 }
@@ -283,8 +273,35 @@ impl From<TypeContents> for Value {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TruthValue {
+impl From<String> for Value {
+    fn from(s: String) -> Self {
+        Self::TypedValue(TypeContents::String(s))
+    }
+}
+
+impl From<&str> for Value {
+    fn from(s: &str) -> Self {
+        Self::TypedValue(TypeContents::String(s.to_owned()))
+    }
+}
+
+impl From<IntegerStorage> for Value {
+    fn from(i: IntegerStorage) -> Self {
+        Self::TypedValue(TypeContents::Integer(i))
+    }
+}
+
+impl From<bool> for Value {
+    fn from(b: bool) -> Self {
+        match b {
+            true => Self::TypedValue(TypeContents::Integer(1)),
+            false => Self::TypedValue(TypeContents::Integer(0)),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+enum TruthValue {
     True,
     False,
     Unknown,
@@ -317,10 +334,6 @@ impl TruthValue {
             (Self::True, _) | (_, Self::True) => Self::True,
             _ => Self::Unknown,
         }
-    }
-
-    pub fn is_true(self) -> bool {
-        matches!(self, Self::True)
     }
 }
 
@@ -356,6 +369,10 @@ impl From<bool> for TruthValue {
 
 impl From<TruthValue> for Value {
     fn from(t: TruthValue) -> Self {
-        Value::TruthValue(t)
+        match t {
+            TruthValue::True => 1.into(),
+            TruthValue::False => 0.into(),
+            TruthValue::Unknown => Self::Null,
+        }
     }
 }

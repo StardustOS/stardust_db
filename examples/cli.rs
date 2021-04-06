@@ -9,7 +9,7 @@ fn main() {
 
 fn get_results() -> Result<()> {
     let mut sql = String::new();
-    let mut db = Database::open("D:\\Documents\\ComputerScience\\CS5099\\test.db")?;
+    let db = Database::open("D:\\Documents\\ComputerScience\\CS5099\\test.db")?;
     loop {
         sql.clear();
         print!(">");
