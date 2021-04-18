@@ -1,14 +1,17 @@
 use crate::{
     ast::{
-        BinaryOp, Column, CreateTable, Delete, DropTable, Expression, Insert, Projection,
-        SelectContents, SelectQuery, SqlQuery, TableName, Values,
+        BinaryOp, Column, CreateTable, Delete, DropTable, Insert, Projection, SelectContents,
+        SelectQuery, SqlQuery, TableName, UnresolvedExpression, Values,
     },
     data_types::Value,
     error::{Error, ExecutionError, Result},
+    foreign_key::ForeignKeys,
     join_handler::JoinHandler,
+    resolved_expression::Expression,
+    storage::Columns,
     table_definition::TableDefinition,
     table_handler::TableHandler,
-    EmptyRow, GetData, TableColumns,
+    Empty, GetData, TableColumns,
 };
 use itertools::Itertools;
 use sled::{open, Db};
@@ -23,18 +26,24 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
+    pub fn was_recovered(&self) -> bool {
+        self.db.was_recovered()
+    }
+
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Interpreter> {
         Ok(Interpreter { db: open(path)? })
     }
 
     pub fn execute(&self, query: SqlQuery) -> Result<Relation> {
-        match query {
+        let result = match query {
             SqlQuery::CreateTable(create_table) => self.execute_create_table(create_table),
             SqlQuery::Insert(insert) => self.execute_insert(insert),
             SqlQuery::SelectQuery(select) => self.execute_select(select),
             SqlQuery::DropTable(drop_table) => self.execute_drop_table(drop_table),
             SqlQuery::Delete(delete) => self.execute_delete(delete),
-        }
+        }?;
+        self.db.flush()?;
+        Ok(result)
     }
 
     pub fn open_table(&self, table_name: TableName) -> Result<TableHandler> {
@@ -48,12 +57,40 @@ impl Interpreter {
         Ok(TableHandler::new(tree, table_definition, name, alias))
     }
 
+    pub fn open_internal_table(
+        &self,
+        table_name: String,
+        columns: Columns,
+    ) -> Result<TableHandler> {
+        let tree = self.db.open_tree(&table_name)?;
+        let table_definition = TableDefinition::new_empty(columns);
+        Ok(TableHandler::new(tree, table_definition, table_name, None))
+    }
+
+    pub fn foreign_keys(&self) -> Result<ForeignKeys> {
+        ForeignKeys::open(self)
+    }
+
+    pub fn tables(&self) -> Result<Vec<TableHandler>> {
+        self.db
+            .tree_names()
+            .into_iter()
+            .filter_map(|n| {
+                let name = String::from_utf8(n.as_ref().into()).unwrap();
+                name.starts_with('@').then(|| name)
+            })
+            .map(|name| self.open_table(TableName::new(name, None)))
+            .collect::<Result<Vec<_>>>()
+    }
+
     fn execute_create_table(&self, create_table: CreateTable) -> Result<Relation> {
         let CreateTable {
             name,
             columns,
             uniques,
-            primary_key_name,
+            primary_key,
+            checks,
+            foreign_keys,
         } = create_table;
         let table_name = name;
         let directory = self.db.open_tree("@tables")?;
@@ -61,7 +98,32 @@ impl Interpreter {
             return Err(Error::Execution(ExecutionError::TableExists(table_name)));
         }
         let mut table_definition =
-            TableDefinition::with_capacity(columns.len(), uniques, primary_key_name);
+            TableDefinition::with_capacity(columns.len(), uniques, primary_key);
+
+        for key in foreign_keys {
+            let foreign_table = self.open_table(TableName::new(key.foreign_table.clone(), None))?;
+            for (this_column, referred_column) in
+                key.columns.iter().zip(key.referred_columns.iter())
+            {
+                let referred_type = foreign_table
+                    .get_data_type(referred_column)
+                    .ok_or_else(|| ExecutionError::NoColumn(referred_column.clone()))?;
+                let this_column = columns
+                    .iter()
+                    .find(|c| c.name == *this_column)
+                    .ok_or_else(|| ExecutionError::NoColumn(this_column.clone()))?;
+                if referred_type != this_column.data_type {
+                    return Err(ExecutionError::IncorrectForeignKeyReferredColumnType {
+                        this_column_name: this_column.name.clone(),
+                        referred_column_name: referred_column.clone(),
+                        this_column_type: this_column.data_type,
+                        referred_column_type: referred_type,
+                    }
+                    .into());
+                }
+            }
+            self.foreign_keys()?.add_key(key, self, &table_name)?;
+        }
         for Column {
             name,
             data_type,
@@ -70,10 +132,15 @@ impl Interpreter {
         } in columns.into_iter()
         {
             let default = default
-                .map(|d| resolve_expression(&d, &EmptyRow))
+                .map(|d| evaluate_expression(&resolve_expression(d, &Empty)?, &Empty))
                 .transpose()?;
             table_definition.add_column(name, default, not_null, data_type)?;
         }
+        for (check, name) in checks {
+            let check = resolve_expression(check, &(&table_definition, table_name.as_str()))?;
+            table_definition.add_check(check, name);
+        }
+
         let encoded: Vec<u8> = bincode::serialize(&table_definition)?;
         directory.insert(table_name.clone().into_bytes(), encoded)?;
         directory.flush()?;
@@ -112,7 +179,7 @@ impl Interpreter {
                         _ => row_values.push(table.get_default(column_name)?),
                     }
                 }
-                table.insert_values(row_values)?;
+                table.insert_values(row_values, self)?;
             }
         } else {
             if values.num_columns() != table.num_columns() {
@@ -123,7 +190,7 @@ impl Interpreter {
                 .into());
             }
             for row in values.take_rows() {
-                table.insert_values(row)?
+                table.insert_values(row, self)?
             }
         }
         Ok(Default::default())
@@ -143,29 +210,29 @@ impl Interpreter {
                 let mut projection_expressions = Vec::with_capacity(projections.len());
 
                 let selection = selection
-                    .map(|e| resolve_column_names(e, &table_handler))
+                    .map(|e| resolve_expression(e, &table_handler))
                     .transpose()?;
                 for projection in projections {
                     match projection {
                         Projection::Wildcard => {
                             for column_name in table_handler.all_column_names()? {
-                                result_column_names.push(column_name.column_name().to_owned());
+                                result_column_names.push(column_name.to_string());
                                 projection_expressions.push(Expression::Identifier(column_name));
                             }
                         }
                         Projection::QualifiedWildcard(table_name) => {
                             for column_name in table_handler.column_names(&table_name)? {
-                                result_column_names.push(column_name.column_name().to_owned());
+                                result_column_names.push(column_name.to_string());
                                 projection_expressions.push(Expression::Identifier(column_name));
                             }
                         }
                         Projection::Unaliased(e) => {
                             result_column_names.push(e.to_string());
-                            projection_expressions.push(resolve_column_names(e, &table_handler)?);
+                            projection_expressions.push(resolve_expression(e, &table_handler)?);
                         }
                         Projection::Aliased(e, alias) => {
                             result_column_names.push(alias);
-                            projection_expressions.push(resolve_column_names(e, &table_handler)?);
+                            projection_expressions.push(resolve_expression(e, &table_handler)?);
                         }
                     }
                 }
@@ -191,7 +258,7 @@ impl Interpreter {
                 for row in rows {
                     let values = row
                         .into_iter()
-                        .map(|e| resolve_expression(&e, &EmptyRow))
+                        .map(|e| evaluate_expression(&resolve_expression(e, &Empty)?, &Empty))
                         .collect::<Result<_>>()?;
                     result.add_row(values)?
                 }
@@ -209,14 +276,12 @@ impl Interpreter {
         let table = self.open_table(TableName::new(table_name, None))?;
         let mut iter = table.iter();
         let predicate = predicate
-            .map(|p| resolve_column_names(p, &table))
-            .transpose()?;
-        while let Some(row) = if let Some(predicate) = &predicate {
-            iter.filter(predicate, &table)?
-        } else {
-            iter.get_next()?
-        } {
-            row.delete_row(&table)?
+            .map(|p| resolve_expression(p, &table))
+            .transpose()?
+            .unwrap_or_else(|| Expression::Value(1.into()));
+        for row in iter.filter_where(&predicate, &table) {
+            let row = row?;
+            table.delete_row(&row, self)?;
         }
         Ok(Relation::default())
     }
@@ -233,7 +298,7 @@ impl Interpreter {
         while let Some(row) = iter.get_next()? {
             let row_values = projections
                 .iter()
-                .map(|e| resolve_expression(e, &(&table, &row)))
+                .map(|e| evaluate_expression(e, &(&table, &row)))
                 .collect::<Result<Vec<_>>>()?;
             result_set.add_row(row_values)?;
         }
@@ -242,6 +307,7 @@ impl Interpreter {
 
     fn execute_drop_table(&self, drop_table: DropTable) -> Result<Relation> {
         for name in drop_table.names {
+            self.foreign_keys()?.process_drop_table(&name, self)?;
             let directory = self.db.open_tree("@tables")?;
             directory.remove(name.as_bytes())?;
             self.db.drop_tree(name.as_bytes())?;
@@ -323,22 +389,22 @@ impl Display for Relation {
     }
 }
 
-pub fn resolve_column_names(
-    expression: Expression,
+pub fn resolve_expression(
+    expression: UnresolvedExpression,
     table: &impl TableColumns,
 ) -> Result<Expression> {
     match expression {
-        Expression::Value(v) => Ok(Expression::Value(v)),
-        Expression::Identifier(i) => Ok(Expression::Identifier(table.resolve_name(i)?)),
-        Expression::BinaryOp(l, op, r) => Ok(Expression::BinaryOp(
-            Box::new(resolve_column_names(*l, table)?),
+        UnresolvedExpression::Value(v) => Ok(Expression::Value(v)),
+        UnresolvedExpression::Identifier(i) => Ok(Expression::Identifier(table.resolve_name(i)?)),
+        UnresolvedExpression::BinaryOp(l, op, r) => Ok(Expression::BinaryOp(
+            Box::new(resolve_expression(*l, table)?),
             op,
-            Box::new(resolve_column_names(*r, table)?),
+            Box::new(resolve_expression(*r, table)?),
         )),
     }
 }
 
-pub fn resolve_expression<H>(expression: &Expression, row: &H) -> Result<Value>
+pub fn evaluate_expression<H>(expression: &Expression, row: &H) -> Result<Value>
 where
     H: GetData,
 {
@@ -346,8 +412,8 @@ where
         Expression::Identifier(column_name) => row.get_data(column_name),
         Expression::Value(v) => Ok(v.clone()),
         Expression::BinaryOp(l, op, r) => {
-            let left = resolve_expression(l, row)?;
-            let right = resolve_expression(r, row)?;
+            let left = evaluate_expression(l, row)?;
+            let right = evaluate_expression(r, row)?;
             match op {
                 BinaryOp::And => Ok(left.and(&right)),
                 BinaryOp::Or => Ok(left.or(&right)),

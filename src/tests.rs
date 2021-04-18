@@ -446,6 +446,110 @@ fn select_inner_join_on() {
 }
 
 #[test]
+fn select_natural_join() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE people (name string, age int);
+        INSERT INTO people VALUES ('Josh', 23), ('Rupert', 25), ('Hugh', 43);
+        CREATE TABLE hobbies (name string, hobby string);
+        INSERT INTO hobbies VALUES ('Josh', 'Music'), ('Hugh', 'Swimming'), ('Mike', 'Painting');",
+        )
+        .unwrap();
+    let result = db
+        .execute_query("SELECT * FROM people NATURAL JOIN hobbies;")
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    result[0].assert_equals(
+        set![
+            vec![Value::from("Josh"), Value::from(23), Value::from("Music")],
+            vec![
+                Value::from("Hugh"),
+                Value::from(43),
+                Value::from("Swimming")
+            ],
+        ],
+        vec!["name", "age", "hobby"],
+    )
+}
+
+#[test]
+fn select_natural_join_no_common_columns() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE people (name string, age int);
+        INSERT INTO people VALUES ('Josh', 23), ('Rupert', 25), ('Hugh', 43);
+        CREATE TABLE hobbies (name2 string, hobby string);
+        INSERT INTO hobbies VALUES ('Josh', 'Music'), ('Hugh', 'Swimming'), ('Mike', 'Painting');",
+        )
+        .unwrap();
+    let result = db
+        .execute_query("SELECT * FROM people NATURAL JOIN hobbies;")
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    dbg!(&result[0]).assert_equals(
+        set![
+            vec![
+                Value::from("Josh"),
+                Value::from(23),
+                Value::from("Josh"),
+                Value::from("Music")
+            ],
+            vec![
+                Value::from("Josh"),
+                Value::from(23),
+                Value::from("Hugh"),
+                Value::from("Swimming")
+            ],
+            vec![
+                Value::from("Josh"),
+                Value::from(23),
+                Value::from("Mike"),
+                Value::from("Painting")
+            ],
+            vec![
+                Value::from("Rupert"),
+                Value::from(25),
+                Value::from("Josh"),
+                Value::from("Music")
+            ],
+            vec![
+                Value::from("Rupert"),
+                Value::from(25),
+                Value::from("Hugh"),
+                Value::from("Swimming")
+            ],
+            vec![
+                Value::from("Rupert"),
+                Value::from(25),
+                Value::from("Mike"),
+                Value::from("Painting")
+            ],
+            vec![
+                Value::from("Hugh"),
+                Value::from(43),
+                Value::from("Josh"),
+                Value::from("Music")
+            ],
+            vec![
+                Value::from("Hugh"),
+                Value::from(43),
+                Value::from("Hugh"),
+                Value::from("Swimming")
+            ],
+            vec![
+                Value::from("Hugh"),
+                Value::from(43),
+                Value::from("Mike"),
+                Value::from("Painting")
+            ],
+        ],
+        vec!["name", "age", "name2", "hobby"],
+    )
+}
+
+#[test]
 fn select_left_join_on() {
     let db = temp_db();
     let _ = db
@@ -715,5 +819,187 @@ fn insert_duplicate_to_unique_named_constraint_multiple_values() {
     let result = db.execute_query("INSERT INTO test VALUES ('User', 25);");
     assert!(
         matches!(result, Err(Error::Execution(ExecutionError::UniqueConstraintFailed(err))) if err == "constraint")
+    )
+}
+
+#[test]
+fn insert_duplicate_to_primary_key() {
+    let db = temp_db();
+    let _ = db
+        .execute_query("CREATE TABLE test (name string PRIMARY KEY, age int);")
+        .unwrap();
+    let _ = db
+        .execute_query("INSERT INTO test VALUES ('User', 25);")
+        .unwrap();
+    let _ = db
+        .execute_query("INSERT INTO test VALUES ('User2', 23);")
+        .unwrap();
+    let result = db.execute_query("INSERT INTO test VALUES ('User', 27);");
+    assert!(
+        matches!(result, Err(Error::Execution(ExecutionError::UniqueConstraintFailed(err))) if err == "name")
+    )
+}
+
+#[test]
+fn insert_duplicate_to_primary_key_constraint() {
+    let db = temp_db();
+    let _ = db
+        .execute_query("CREATE TABLE test (name string, age int, PRIMARY KEY (name));")
+        .unwrap();
+    let _ = db
+        .execute_query("INSERT INTO test VALUES ('User', 25);")
+        .unwrap();
+    let _ = db
+        .execute_query("INSERT INTO test VALUES ('User2', 23);")
+        .unwrap();
+    let result = db.execute_query("INSERT INTO test VALUES ('User', 27);");
+    assert!(
+        matches!(result, Err(Error::Execution(ExecutionError::UniqueConstraintFailed(err))) if err == "name")
+    )
+}
+
+#[test]
+fn insert_duplicate_to_primary_key_named() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE test (name string, age int, CONSTRAINT pkey PRIMARY KEY (name));",
+        )
+        .unwrap();
+    let _ = db
+        .execute_query("INSERT INTO test VALUES ('User', 25);")
+        .unwrap();
+    let _ = db
+        .execute_query("INSERT INTO test VALUES ('User2', 23);")
+        .unwrap();
+    let result = db.execute_query("INSERT INTO test VALUES ('User', 27);");
+    assert!(
+        matches!(result, Err(Error::Execution(ExecutionError::UniqueConstraintFailed(err))) if err == "pkey")
+    )
+}
+
+#[test]
+fn insert_duplicate_to_primary_key_multiple_values() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE test (name string, age int, CONSTRAINT pkey PRIMARY KEY (name, age));",
+        )
+        .unwrap();
+    let _ = db
+        .execute_query("INSERT INTO test VALUES ('User', 25);")
+        .unwrap();
+    let _ = db
+        .execute_query("INSERT INTO test VALUES ('User', 23);")
+        .unwrap();
+    let result = db.execute_query("INSERT INTO test VALUES ('User', 23);");
+    assert!(
+        matches!(result, Err(Error::Execution(ExecutionError::UniqueConstraintFailed(err))) if err == "pkey")
+    )
+}
+
+#[test]
+fn insert_null_to_primary_key() {
+    let db = temp_db();
+    let _ = db
+        .execute_query("CREATE TABLE test (name string PRIMARY KEY, age int);")
+        .unwrap();
+    let result = db.execute_query("INSERT INTO test VALUES (NULL, 27);");
+    assert!(
+        matches!(result, Err(Error::Execution(ExecutionError::NullConstraintFailed(err))) if err == "name")
+    )
+}
+
+#[test]
+fn insert_null_to_primary_key_constraint() {
+    let db = temp_db();
+    let _ = db
+        .execute_query("CREATE TABLE test (name string, age int, PRIMARY KEY (name));")
+        .unwrap();
+    let result = db.execute_query("INSERT INTO test VALUES (NULL, 27);");
+    assert!(
+        matches!(result, Err(Error::Execution(ExecutionError::NullConstraintFailed(err))) if err == "name")
+    )
+}
+
+#[test]
+fn insert_null_to_primary_key_named() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE test (name string, age int, CONSTRAINT pkey PRIMARY KEY (name));",
+        )
+        .unwrap();
+    let result = db.execute_query("INSERT INTO test VALUES (NULL, 27);");
+    assert!(
+        matches!(result, Err(Error::Execution(ExecutionError::NullConstraintFailed(err))) if err == "pkey")
+    )
+}
+
+#[test]
+fn insert_null_to_primary_key_multiple_values() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE test (name string, age int, CONSTRAINT pkey PRIMARY KEY (name, age));",
+        )
+        .unwrap();
+    let result = db.execute_query("INSERT INTO test VALUES (NULL, 23);");
+    assert!(
+        matches!(result, Err(Error::Execution(ExecutionError::NullConstraintFailed(err))) if err == "pkey")
+    );
+    let result = db.execute_query("INSERT INTO test VALUES ('User', NULL);");
+    assert!(
+        matches!(result, Err(Error::Execution(ExecutionError::NullConstraintFailed(err))) if err == "pkey")
+    )
+}
+
+#[test]
+fn foreign_key_valid() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE foreign (name string);
+            INSERT INTO foreign VALUES ('User');
+            CREATE TABLE primary (name string, age int, CONSTRAINT fkey0 FOREIGN KEY (name) REFERENCES foreign(name))",
+        )
+        .unwrap();
+    let result = db
+        .execute_query("INSERT INTO primary VALUES ('User', 23);")
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert!(result[0].is_empty());
+}
+
+#[test]
+fn foreign_key_missing() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE foreign (name string);
+            INSERT INTO foreign VALUES ('User');
+            CREATE TABLE primary (name string, age int, CONSTRAINT fkey1 FOREIGN KEY (name) REFERENCES foreign(name))",
+        )
+        .unwrap();
+    let result = db.execute_query("INSERT INTO primary VALUES ('Unknown', 23);");
+    assert!(
+        matches!(dbg!(result), Err(Error::Execution(ExecutionError::ForeignKeyConstraintFailed(err))) if err == "fkey1")
+    )
+}
+
+#[test]
+fn foreign_key_delete_referred() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE foreign (name string);
+            INSERT INTO foreign VALUES ('User');
+            CREATE TABLE primary (name string, age int, CONSTRAINT fkey2 FOREIGN KEY (name) REFERENCES foreign(name));
+            INSERT INTO primary VALUES ('User', 23);",
+        )
+        .unwrap();
+    let result = db.execute_query("DELETE FROM foreign WHERE name = 'User';");
+    assert!(
+        matches!(dbg!(result), Err(Error::Execution(ExecutionError::ForeignKeyConstraintFailed(err))) if err == "fkey2")
     )
 }

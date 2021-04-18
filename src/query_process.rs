@@ -7,9 +7,9 @@ use crate::{
 use itertools::Itertools;
 use sqlparser::ast::{
     self, BinaryOperator, ColumnDef, ColumnOption, DataType, Expr, FileFormat,
-    HiveDistributionStyle, HiveFormat, Ident, Join, ObjectName, ObjectType, Query, Select,
-    SelectItem, SetExpr, SqlOption, SqliteOnConflict, Statement, TableConstraint, TableFactor,
-    TableWithJoins, Value,
+    HiveDistributionStyle, HiveFormat, Ident, Join, ObjectName, ObjectType, Query,
+    ReferentialAction, Select, SelectItem, SetExpr, SqlOption, SqliteOnConflict, Statement,
+    TableConstraint, TableFactor, TableWithJoins, Value,
 };
 
 pub fn process_query(statement: Statement) -> Result<SqlQuery> {
@@ -105,8 +105,11 @@ fn parse_create_table(
 ) -> Result<CreateTable> {
     let table_name = name.to_string();
     let mut uniques = Vec::new();
-    let mut primary_key_name = None;
-    let mut table_columns = columns
+    let mut primary_key = None;
+    let mut checks = Vec::new();
+    let mut check_name_counter: u16 = 0;
+    let mut foreign_keys = Vec::new();
+    let table_columns = columns
         .into_iter()
         .enumerate()
         .map(|(index, c)| {
@@ -118,32 +121,62 @@ fn parse_create_table(
                 collation: _collation,
                 options,
             } = c;
+            let column_name = name.to_string();
             for column_option in options {
+                let name = column_option
+                    .name
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| name.to_string());
                 match column_option.option {
                     ColumnOption::Default(expr) => default = Some(parse_expression(expr)),
                     ColumnOption::NotNull => not_null = true,
                     ColumnOption::Unique { is_primary } => {
                         if is_primary {
-                            if primary_key_name.is_some() {
+                            if primary_key.is_some() {
                                 return Err(Error::Execution(ExecutionError::MultiplePrimaryKey(
                                     table_name.clone(),
                                 )));
                             } else {
-                                primary_key_name = Some(name.to_string());
-                                not_null = true;
+                                primary_key = Some((vec![index], name));
                             }
+                        } else {
+                            uniques.push((vec![index], name));
                         }
-                        let name = column_option
-                            .name
-                            .map(|n| n.to_string())
-                            .unwrap_or_else(|| name.to_string());
-                        uniques.push((vec![index], name));
+                    }
+                    ColumnOption::ForeignKey {
+                        foreign_table,
+                        referred_columns,
+                        on_delete,
+                        on_update,
+                    } => {
+                        let referred_columns = match referred_columns.as_slice() {
+                            [c] => vec![c.to_string()],
+                            _ => {
+                                return Err(ExecutionError::IncorrectNumForeignKeyReferredColumns {
+                                    expected: 1,
+                                    found: referred_columns.len(),
+                                }
+                                .into())
+                            }
+                        };
+                        foreign_keys.push(ForeignKey::new(
+                            name,
+                            vec![column_name.clone()],
+                            foreign_table.to_string(),
+                            referred_columns,
+                            on_delete.map(parse_foreign_key_action),
+                            on_update.map(parse_foreign_key_action),
+                        ))
+                    }
+                    ColumnOption::Check(e) => {
+                        let expression = parse_expression(e);
+                        checks.push((expression, name))
                     }
                     _ => unimplemented!("{:?}", column_option.option),
                 }
             }
             Ok(Column::new(
-                name.to_string(),
+                column_name,
                 convert_data_type(data_type),
                 default,
                 not_null,
@@ -157,36 +190,11 @@ fn parse_create_table(
                 columns,
                 is_primary,
             } => {
-                if is_primary {
-                    if primary_key_name.is_some() {
-                        return Err(Error::Execution(ExecutionError::MultiplePrimaryKey(
-                            table_name,
-                        )));
-                    } else {
-                        primary_key_name =
-                            Some(name.clone().map(|n| n.to_string()).unwrap_or_else(|| {
-                                columns.iter().map(|c| c.to_string()).join(", ")
-                            }));
-                        for column in &columns {
-                            let column_name = column.to_string();
-                            if let Some(column) =
-                                table_columns.iter_mut().find(|c| c.name == column_name)
-                            {
-                                column.not_null = true;
-                            } else {
-                                return Err(Error::Execution(ExecutionError::NoColumn(
-                                    column_name,
-                                )));
-                            }
-                        }
-                    }
-                }
-
                 let name = name
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| columns.iter().map(|c| c.to_string()).join(", "));
                 let unique_set = columns
-                    .into_iter()
+                    .iter()
                     .map(|column| {
                         let column_name = column.to_string();
                         table_columns
@@ -195,16 +203,81 @@ fn parse_create_table(
                             .ok_or(Error::Execution(ExecutionError::NoColumn(column_name)))
                     })
                     .collect::<Result<Vec<_>>>()?;
-                uniques.push((unique_set, name));
+                if is_primary {
+                    if primary_key.is_some() {
+                        return Err(Error::Execution(ExecutionError::MultiplePrimaryKey(
+                            table_name,
+                        )));
+                    } else {
+                        primary_key = Some((unique_set, name));
+                    }
+                } else {
+                    uniques.push((unique_set, name));
+                }
             }
-            _ => unimplemented!("{:?}", constraint),
+            TableConstraint::ForeignKey {
+                name,
+                columns,
+                foreign_table,
+                referred_columns,
+                on_delete,
+                on_update,
+            } => {
+                let name = name.map_or_else(
+                    || format!("__fkey{}", foreign_keys.len()),
+                    |n| n.to_string(),
+                );
+                let columns = columns
+                    .iter()
+                    .map(|column| column.to_string())
+                    .collect::<Vec<_>>();
+                let referred_columns = match referred_columns.as_slice() {
+                    [c] => vec![c.to_string()],
+                    _ => {
+                        return Err(ExecutionError::IncorrectNumForeignKeyReferredColumns {
+                            expected: 1,
+                            found: referred_columns.len(),
+                        }
+                        .into())
+                    }
+                };
+                if columns.len() != referred_columns.len() {
+                    return Err(ExecutionError::IncorrectNumForeignKeyReferredColumns {
+                        expected: columns.len(),
+                        found: referred_columns.len(),
+                    }
+                    .into());
+                }
+                foreign_keys.push(ForeignKey::new(
+                    name,
+                    columns,
+                    foreign_table.to_string(),
+                    referred_columns,
+                    on_delete.map(parse_foreign_key_action),
+                    on_update.map(parse_foreign_key_action),
+                ))
+            }
+            TableConstraint::Check { name, expr } => {
+                let check = parse_expression(*expr);
+                let name = name.map_or_else(
+                    || {
+                        let n = check_name_counter;
+                        check_name_counter += 1;
+                        format!("__check{}", n)
+                    },
+                    |n| n.to_string(),
+                );
+                checks.push((check, name))
+            }
         }
     }
     Ok(CreateTable::new(
         table_name,
         table_columns,
         uniques,
-        primary_key_name.unwrap_or_default(),
+        primary_key,
+        checks,
+        foreign_keys,
     ))
 }
 
@@ -243,35 +316,51 @@ fn parse_select_query(query: Query) -> Result<SelectQuery> {
     })
 }
 
-fn parse_expression(expression: Expr) -> Expression {
+fn parse_expression(expression: Expr) -> UnresolvedExpression {
     match expression {
-        Expr::Value(v) => Expression::Value(parse_value(v)),
-        Expr::Identifier(i) => Expression::Identifier(ColumnName::new(None, i.to_string())),
-        Expr::CompoundIdentifier(i) => Expression::Identifier(parse_compound_identifier(i)),
+        Expr::Value(v) => UnresolvedExpression::Value(parse_value(v)),
+        Expr::Identifier(i) => {
+            UnresolvedExpression::Identifier(ColumnName::new(None, i.to_string()))
+        }
+        Expr::CompoundIdentifier(i) => {
+            UnresolvedExpression::Identifier(parse_compound_identifier(i))
+        }
         Expr::BinaryOp { left, op, right } => {
             let left = Box::new(parse_expression(*left));
             let right = Box::new(parse_expression(*right));
             match op {
-                BinaryOperator::And => Expression::BinaryOp(left, BinaryOp::And, right),
-                BinaryOperator::Or => Expression::BinaryOp(left, BinaryOp::Or, right),
-                BinaryOperator::Eq => {
-                    Expression::BinaryOp(left, BinaryOp::Comparison(ComparisonOp::Eq), right)
-                }
-                BinaryOperator::NotEq => {
-                    Expression::BinaryOp(left, BinaryOp::Comparison(ComparisonOp::NotEq), right)
-                }
-                BinaryOperator::Lt => {
-                    Expression::BinaryOp(left, BinaryOp::Comparison(ComparisonOp::Lt), right)
-                }
-                BinaryOperator::Gt => {
-                    Expression::BinaryOp(left, BinaryOp::Comparison(ComparisonOp::Gt), right)
-                }
-                BinaryOperator::LtEq => {
-                    Expression::BinaryOp(left, BinaryOp::Comparison(ComparisonOp::LtEq), right)
-                }
-                BinaryOperator::GtEq => {
-                    Expression::BinaryOp(left, BinaryOp::Comparison(ComparisonOp::GtEq), right)
-                }
+                BinaryOperator::And => UnresolvedExpression::BinaryOp(left, BinaryOp::And, right),
+                BinaryOperator::Or => UnresolvedExpression::BinaryOp(left, BinaryOp::Or, right),
+                BinaryOperator::Eq => UnresolvedExpression::BinaryOp(
+                    left,
+                    BinaryOp::Comparison(ComparisonOp::Eq),
+                    right,
+                ),
+                BinaryOperator::NotEq => UnresolvedExpression::BinaryOp(
+                    left,
+                    BinaryOp::Comparison(ComparisonOp::NotEq),
+                    right,
+                ),
+                BinaryOperator::Lt => UnresolvedExpression::BinaryOp(
+                    left,
+                    BinaryOp::Comparison(ComparisonOp::Lt),
+                    right,
+                ),
+                BinaryOperator::Gt => UnresolvedExpression::BinaryOp(
+                    left,
+                    BinaryOp::Comparison(ComparisonOp::Gt),
+                    right,
+                ),
+                BinaryOperator::LtEq => UnresolvedExpression::BinaryOp(
+                    left,
+                    BinaryOp::Comparison(ComparisonOp::LtEq),
+                    right,
+                ),
+                BinaryOperator::GtEq => UnresolvedExpression::BinaryOp(
+                    left,
+                    BinaryOp::Comparison(ComparisonOp::GtEq),
+                    right,
+                ),
                 _ => unimplemented!("{:?}", op),
             }
         }
@@ -414,7 +503,10 @@ fn parse_join_constraint(constraint: ast::JoinConstraint) -> JoinConstraint {
     match constraint {
         ast::JoinConstraint::On(e) => JoinConstraint::On(parse_expression(e)),
         ast::JoinConstraint::None => JoinConstraint::None,
-        _ => unimplemented!("{:?}", constraint),
+        ast::JoinConstraint::Natural => JoinConstraint::Natural,
+        ast::JoinConstraint::Using(cols) => {
+            JoinConstraint::Using(cols.into_iter().map(|i| i.to_string()).collect())
+        }
     }
 }
 
@@ -446,5 +538,14 @@ fn convert_data_type(t: DataType) -> Type {
         DataType::String => Type::String,
         DataType::Int => Type::Integer,
         _ => unimplemented!("{:?}", t),
+    }
+}
+
+fn parse_foreign_key_action(action: ReferentialAction) -> ForeignKeyAction {
+    match action {
+        ReferentialAction::Restrict | ReferentialAction::NoAction => ForeignKeyAction::NoAction,
+        ReferentialAction::Cascade => ForeignKeyAction::Cascade,
+        ReferentialAction::SetNull => ForeignKeyAction::SetNull,
+        ReferentialAction::SetDefault => ForeignKeyAction::SetDefault,
     }
 }

@@ -45,7 +45,11 @@ pub enum ExecutionError {
     NullConstraintFailed(String),
     #[error("UNIQUE constraint `{0}` failed")]
     UniqueConstraintFailed(String),
-    #[error("multiple primary keys for table {0}")]
+    #[error("CHECK constraint `{0}` failed")]
+    CheckConstraintFailed(String),
+    #[error("FOREIGN KEY constraint `{0}` failed")]
+    ForeignKeyConstraintFailed(String),
+    #[error("multiple primary keys for table `{0}`")]
     MultiplePrimaryKey(String),
     #[error("missing constraint for join")]
     NoConstraintOnJoin,
@@ -53,4 +57,18 @@ pub enum ExecutionError {
     NoTables,
     #[error("duplicate table name or alias `{0}`")]
     DuplicateTableName(String),
+    #[error("incorrect number of columns referred to in foreign key. Expected {expected}, found {found}")]
+    IncorrectNumForeignKeyReferredColumns { expected: usize, found: usize },
+    #[error("incorrect type for column `{this_column_name}` found on referred column `{referred_column_name}`. Expected `{this_column_type}`, found `{referred_column_type}`")]
+    IncorrectForeignKeyReferredColumnType {
+        this_column_name: String,
+        referred_column_name: String,
+        this_column_type: Type,
+        referred_column_type: Type,
+    },
+    #[error("parent table `{parent_table}` has foreign key dependency `{key_name}`")]
+    ForeignKeyDependencyDelete {
+        parent_table: String,
+        key_name: String,
+    },
 }

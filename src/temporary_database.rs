@@ -2,10 +2,12 @@ use std::{
     env::temp_dir,
     fs::remove_dir_all,
     ops::{Deref, DerefMut},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    sync::Mutex,
 };
 
-use rand::{distributions::Alphanumeric, thread_rng, Rng};
+use once_cell::sync::OnceCell;
+use rand::{distributions::Alphanumeric, prelude::StdRng, Rng, SeedableRng};
 
 use crate::error::Result;
 use crate::Database;
@@ -17,8 +19,15 @@ pub struct TemporaryDatabase {
 
 impl TemporaryDatabase {
     pub fn new() -> Result<Self> {
+        static RNG: OnceCell<Mutex<StdRng>> = OnceCell::new();
+        let rng = RNG.get_or_init(|| Mutex::new(StdRng::seed_from_u64(0)));
+
         let path = loop {
-            let random: String = thread_rng()
+            let random: String = rng
+                .lock()
+                .as_mut()
+                .unwrap()
+                .deref_mut()
                 .sample_iter(&Alphanumeric)
                 .take(12)
                 .map(char::from)
@@ -30,6 +39,10 @@ impl TemporaryDatabase {
         };
         let db = Database::open(&path)?;
         Ok(Self { db, path })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 

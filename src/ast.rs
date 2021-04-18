@@ -1,10 +1,15 @@
 use auto_enums::auto_enum;
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    data_types::{Type, Value},
+    data_types::{IntegerStorage, Type, Value},
+    error::{Error, Result},
     storage::ColumnName,
 };
-use std::fmt::{Debug, Formatter};
+use std::{
+    convert::TryFrom,
+    fmt::{Debug, Formatter},
+};
 
 #[derive(Debug)]
 pub enum SqlQuery {
@@ -20,7 +25,9 @@ pub struct CreateTable {
     pub name: String,
     pub columns: Vec<Column>,
     pub uniques: Vec<(Vec<usize>, String)>,
-    pub primary_key_name: String,
+    pub primary_key: Option<(Vec<usize>, String)>,
+    pub checks: Vec<(UnresolvedExpression, String)>,
+    pub foreign_keys: Vec<ForeignKey>,
 }
 
 impl CreateTable {
@@ -28,14 +35,92 @@ impl CreateTable {
         name: String,
         columns: Vec<Column>,
         uniques: Vec<(Vec<usize>, String)>,
-        primary_key_name: String,
+        primary_key: Option<(Vec<usize>, String)>,
+        checks: Vec<(UnresolvedExpression, String)>,
+        foreign_keys: Vec<ForeignKey>,
     ) -> Self {
         Self {
             name,
             columns,
             uniques,
-            primary_key_name,
+            primary_key,
+            checks,
+            foreign_keys,
         }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ForeignKey {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub foreign_table: String,
+    pub referred_columns: Vec<String>,
+    pub on_delete: Option<ForeignKeyAction>,
+    pub on_update: Option<ForeignKeyAction>,
+}
+
+impl ForeignKey {
+    pub fn new(
+        name: String,
+        columns: Vec<String>,
+        foreign_table: String,
+        referred_columns: Vec<String>,
+        on_delete: Option<ForeignKeyAction>,
+        on_update: Option<ForeignKeyAction>,
+    ) -> Self {
+        Self {
+            name,
+            columns,
+            foreign_table,
+            referred_columns,
+            on_delete,
+            on_update,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+pub enum ForeignKeyAction {
+    NoAction,
+    Cascade,
+    SetNull,
+    SetDefault,
+}
+
+impl From<ForeignKeyAction> for IntegerStorage {
+    fn from(action: ForeignKeyAction) -> Self {
+        match action {
+            ForeignKeyAction::NoAction => 0,
+            ForeignKeyAction::Cascade => 1,
+            ForeignKeyAction::SetNull => 2,
+            ForeignKeyAction::SetDefault => 3,
+        }
+    }
+}
+
+impl TryFrom<IntegerStorage> for ForeignKeyAction {
+    type Error = Error;
+
+    fn try_from(value: IntegerStorage) -> Result<Self> {
+        Ok(match value {
+            0 => ForeignKeyAction::NoAction,
+            1 => ForeignKeyAction::Cascade,
+            2 => ForeignKeyAction::SetNull,
+            3 => ForeignKeyAction::SetDefault,
+            v => {
+                return Err(Error::Internal(format!(
+                    "Incorrect number {} in TryFrom for ForeignKeyAction",
+                    v
+                )))
+            }
+        })
+    }
+}
+
+impl Default for ForeignKeyAction {
+    fn default() -> Self {
+        Self::NoAction
     }
 }
 
@@ -43,12 +128,17 @@ impl CreateTable {
 pub struct Column {
     pub name: String,
     pub data_type: Type,
-    pub default: Option<Expression>,
+    pub default: Option<UnresolvedExpression>,
     pub not_null: bool,
 }
 
 impl Column {
-    pub fn new(name: String, data_type: Type, default: Option<Expression>, not_null: bool) -> Self {
+    pub fn new(
+        name: String,
+        data_type: Type,
+        default: Option<UnresolvedExpression>,
+        not_null: bool,
+    ) -> Self {
         Self {
             name,
             data_type,
@@ -83,50 +173,54 @@ pub enum SelectQuery {
 
 #[derive(Debug)]
 pub struct Values {
-    pub rows: Vec<Vec<Expression>>,
+    pub rows: Vec<Vec<UnresolvedExpression>>,
 }
 
 impl Values {
-    pub fn new(rows: Vec<Vec<Expression>>) -> Self {
+    pub fn new(rows: Vec<Vec<UnresolvedExpression>>) -> Self {
         Self { rows }
     }
 }
 
 #[derive(Debug)]
-pub enum Expression {
+pub enum UnresolvedExpression {
     Value(Value),
     Identifier(ColumnName),
-    BinaryOp(Box<Expression>, BinaryOp, Box<Expression>),
+    BinaryOp(
+        Box<UnresolvedExpression>,
+        BinaryOp,
+        Box<UnresolvedExpression>,
+    ),
 }
 
-impl std::fmt::Display for Expression {
+impl std::fmt::Display for UnresolvedExpression {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Expression::Value(v) => write!(f, "{}", v),
-            Expression::Identifier(i) => write!(f, "{}", i),
-            Expression::BinaryOp(l, op, r) => write!(f, "{} {} {}", l, op, r),
+            UnresolvedExpression::Value(v) => write!(f, "{}", v),
+            UnresolvedExpression::Identifier(i) => write!(f, "{}", i),
+            UnresolvedExpression::BinaryOp(l, op, r) => write!(f, "{} {} {}", l, op, r),
         }
     }
 }
 
-impl Expression {
+impl UnresolvedExpression {
     pub fn to_column_name(&self) -> ColumnName {
         match self {
-            Expression::Identifier(c) => c.clone(),
-            Expression::Value(v) => ColumnName::new(None, v.to_string()),
-            Expression::BinaryOp(_, _, _) => ColumnName::new(None, self.to_string()),
+            UnresolvedExpression::Identifier(c) => c.clone(),
+            UnresolvedExpression::Value(v) => ColumnName::new(None, v.to_string()),
+            UnresolvedExpression::BinaryOp(_, _, _) => ColumnName::new(None, self.to_string()),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum BinaryOp {
     And,
     Or,
     Comparison(ComparisonOp),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ComparisonOp {
     Eq,
     NotEq,
@@ -167,14 +261,14 @@ impl std::fmt::Display for ComparisonOp {
 pub struct SelectContents {
     pub projections: Vec<Projection>,
     pub from: Option<TableJoins>,
-    pub selection: Option<Expression>,
+    pub selection: Option<UnresolvedExpression>,
 }
 
 impl SelectContents {
     pub fn new(
         projections: Vec<Projection>,
         from: Option<TableJoins>,
-        selection: Option<Expression>,
+        selection: Option<UnresolvedExpression>,
     ) -> Self {
         Self {
             projections,
@@ -188,8 +282,8 @@ impl SelectContents {
 pub enum Projection {
     Wildcard,
     QualifiedWildcard(String),
-    Unaliased(Expression),
-    Aliased(Expression, String),
+    Unaliased(UnresolvedExpression),
+    Aliased(UnresolvedExpression, String),
 }
 
 #[derive(Debug)]
@@ -250,7 +344,9 @@ pub enum JoinOperator {
 
 #[derive(Debug)]
 pub enum JoinConstraint {
-    On(Expression),
+    On(UnresolvedExpression),
+    Natural,
+    Using(Vec<String>),
     None,
 }
 
@@ -268,11 +364,11 @@ impl DropTable {
 #[derive(Debug)]
 pub struct Delete {
     pub table_name: String,
-    pub predicate: Option<Expression>,
+    pub predicate: Option<UnresolvedExpression>,
 }
 
 impl Delete {
-    pub fn new(table_name: String, predicate: Option<Expression>) -> Self {
+    pub fn new(table_name: String, predicate: Option<UnresolvedExpression>) -> Self {
         Self {
             table_name,
             predicate,

@@ -1,39 +1,44 @@
-use std::{convert::TryInto, mem::size_of};
-
 use serde::{Deserialize, Serialize};
-use sled::Tree;
 
 use crate::{
     data_types::{Type, Value},
-    error::{Error, ExecutionError, Result},
-    storage::Columns,
+    error::{ExecutionError, Result},
+    resolved_expression::{Expression, ResolvedColumn},
+    storage::{ColumnKey, ColumnName, Columns},
+    TableColumns,
 };
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-enum Position {
-    Left,
-    Right,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableDefinition {
     columns: Columns,
     not_nulls: Vec<usize>,
     uniques: Vec<(Vec<usize>, String)>,
-    primary_key_name: String,
+    primary_key: Option<(Vec<usize>, String)>,
+    checks: Vec<(Expression, String)>,
 }
 
 impl TableDefinition {
+    pub fn new_empty(columns: Columns) -> Self {
+        Self {
+            columns,
+            not_nulls: Vec::new(),
+            uniques: Vec::new(),
+            primary_key: None,
+            checks: Vec::new(),
+        }
+    }
+
     pub fn with_capacity(
         capacity: usize,
         uniques: Vec<(Vec<usize>, String)>,
-        primary_key_name: String,
+        primary_key: Option<(Vec<usize>, String)>,
     ) -> Self {
         Self {
             columns: Columns::with_capacity(capacity),
             not_nulls: Vec::new(),
             uniques,
-            primary_key_name,
+            primary_key,
+            checks: Vec::new(),
         }
     }
 
@@ -56,6 +61,10 @@ impl TableDefinition {
         Ok(())
     }
 
+    pub fn add_check(&mut self, check: Expression, name: String) {
+        self.checks.push((check, name))
+    }
+
     pub fn num_columns(&self) -> usize {
         self.columns.len()
     }
@@ -64,104 +73,69 @@ impl TableDefinition {
         &self.columns
     }
 
+    pub fn column_index(&self, column_name: &str) -> Result<usize> {
+        self.columns
+            .get_index(column_name)
+            .ok_or_else(|| ExecutionError::NoColumn(column_name.to_owned()).into())
+    }
+
+    pub fn column_name(&self, index: usize) -> Result<&str> {
+        self.columns.column_name(index)
+    }
+
     pub fn get_default(&self, column_name: &str) -> Result<Value> {
         self.columns.get_default(column_name)
     }
 
-    pub fn get_data<'a>(&self, name: &str, row: &'a [u8]) -> Result<Value> {
+    pub fn get_data<K: ColumnKey>(&self, name: K, row: &[u8]) -> Result<Value> {
         self.columns.get_data(name, row)
+    }
+
+    pub fn get_data_type(&self, column_name: &str) -> Option<Type> {
+        self.columns.get_data_type(column_name)
     }
 
     pub fn column_names(&self) -> impl Iterator<Item = &str> {
         self.columns.column_names()
     }
 
-    fn check_row(&self, tree: &Tree, row: &[Value]) -> Result<()> {
-        for &i in &self.not_nulls {
-            if row[i].is_null() {
-                return Err(ExecutionError::NullConstraintFailed(
-                    self.columns.column_name(i)?.to_owned(),
-                )
-                .into());
-            }
-        }
-        for tree_row in tree.iter() {
-            let (_, row_bytes) = tree_row?;
-            for (unique_set, name) in &self.uniques {
-                let mut identical = true;
-                for index in unique_set.iter().copied() {
-                    let other_value = self.columns.get_data(index, &row_bytes)?;
-                    if !row[index].compare(&other_value).is_equal() {
-                        identical = false;
-                        break;
-                    }
-                }
-                if identical {
-                    return Err(ExecutionError::UniqueConstraintFailed(name.clone()).into());
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub fn insert_values(&self, tree: &Tree, values: Vec<Value>) -> Result<()> {
-        self.check_row(tree, &values)?;
-        let key = generate_next_index(tree)?;
-        let mut value = Vec::new();
-        self.columns.generate_row(values.into_iter(), &mut value)?;
-        tree.insert(key, value)?;
-        Ok(())
-    }
-
     pub fn contains_column(&self, column: &str) -> bool {
         self.columns.contains_column(column)
     }
-}
 
-fn generate_next_index(tree: &Tree) -> Result<[u8; 8]> {
-    if let Some((last_key, _)) = tree.last()? {
-        let bytes = last_key
-            .get(..size_of::<u64>())
-            .ok_or_else(|| Error::Internal("Key is wrong number of bytes".to_owned()))?
-            .try_into()
-            .unwrap();
-        let value = u64::from_be_bytes(bytes) + 1;
-        Ok(value.to_be_bytes())
-    } else {
-        Ok(0u64.to_be_bytes())
-    }
-}
-/*
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TreeEntry {
-    Right(Columns),
-    Both(Columns, Columns),
-}
-
-impl TreeEntry {
-    fn num_parts(&self) -> usize {
-        match self {
-            TreeEntry::Right(_) => 1,
-            TreeEntry::Both(_, _) => 2,
-        }
+    pub fn uniques(&self) -> impl Iterator<Item = (&[usize], &str)> {
+        self.uniques.iter().map(|(u, n)| (u.as_slice(), n.as_str()))
     }
 
-    fn get_data<'a>(
-        &self,
-        index: usize,
-        position: Position,
-        left: &'a [u8],
-        right: &'a [u8],
-    ) -> Result<Value> {
-        match (self, position) {
-            (Self::Right(c), Position::Right) => c.get_data(index, right),
-            (Self::Both(l, _), Position::Left) => l.get_data(index, left),
-            (Self::Both(_, r), Position::Right) => r.get_data(index, right),
-            _ => Err(Error::Internal(format!(
-                "Tried to get left data for right columns with index {}",
-                index
-            ))),
+    pub fn not_nulls(&self) -> impl Iterator<Item = usize> + '_ {
+        self.not_nulls.iter().copied()
+    }
+
+    pub fn checks(&self) -> impl Iterator<Item = (&Expression, &str)> {
+        self.checks.iter().map(|(c, n)| (c, n.as_str()))
+    }
+
+    pub fn primary_key(&self) -> Option<(&[usize], &str)> {
+        self.primary_key
+            .as_ref()
+            .map(|(keys, name)| (keys.as_slice(), name.as_str()))
+    }
+}
+
+impl TableColumns for (&TableDefinition, &str) {
+    fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn> {
+        let (definition, this_name) = self;
+        let (table, column) = name.destructure();
+        if let Some(table) = table {
+            if table == *this_name && definition.contains_column(&column) {
+                Ok(ResolvedColumn::new(table, column))
+            } else {
+                Err(ExecutionError::NoColumn(format!("{}.{}", table, column)).into())
+            }
+        } else if definition.contains_column(&column) {
+            Ok(ResolvedColumn::new(this_name.to_string(), column))
+        } else {
+            Err(ExecutionError::NoColumn(format!("{}.{}", this_name.to_string(), column)).into())
         }
     }
 }
-*/

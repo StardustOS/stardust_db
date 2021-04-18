@@ -178,6 +178,20 @@ impl Value {
         }
     }
 
+    pub fn assume_string(self) -> Result<String> {
+        match self {
+            Self::TypedValue(TypeContents::String(s)) => Ok(s),
+            v => Err(Error::Internal(format!("Assssumed string, got {}", v))),
+        }
+    }
+
+    pub fn assume_integer(self) -> Result<IntegerStorage> {
+        match self {
+            Self::TypedValue(TypeContents::Integer(i)) => Ok(i),
+            v => Err(Error::Internal(format!("Assssumed integer, got {}", v))),
+        }
+    }
+
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }

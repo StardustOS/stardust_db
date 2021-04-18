@@ -1,12 +1,16 @@
-use std::iter;
+use std::{
+    collections::{HashMap, HashSet},
+    iter,
+};
 
 use auto_enums::auto_enum;
 
 use crate::{
-    ast::{Expression, JoinConstraint, JoinOperator, TableJoins},
+    ast::{BinaryOp, ComparisonOp, JoinConstraint, JoinOperator, TableJoins},
     data_types::Value,
     error::{Error, ExecutionError, Result},
-    interpreter::{resolve_column_names, resolve_expression, Interpreter},
+    interpreter::{evaluate_expression, resolve_expression, Interpreter},
+    resolved_expression::{Expression, ResolvedColumn},
     storage::ColumnName,
     table_handler::{TableHandler, TableIter, TableRow},
     GetData, TableColumns,
@@ -26,14 +30,17 @@ impl JoinHandler {
         })
     }
 
-    pub fn all_column_names(&self) -> Result<impl Iterator<Item = ColumnName> + '_> {
+    pub fn all_column_names(&self) -> Result<impl Iterator<Item = ResolvedColumn> + '_> {
         match self {
-            Self::Join(join) => Ok(join.all_column_names()),
+            Self::Join(join) => Ok(join.wildcard_column_names()),
             Self::Empty => Err(ExecutionError::NoTables.into()),
         }
     }
 
-    pub fn column_names(&self, table_name: &str) -> Result<impl Iterator<Item = ColumnName> + '_> {
+    pub fn column_names(
+        &self,
+        table_name: &str,
+    ) -> Result<impl Iterator<Item = ResolvedColumn> + '_> {
         match self {
             JoinHandler::Join(join) => join.column_names(table_name),
             JoinHandler::Empty => Err(ExecutionError::NoTables.into()),
@@ -56,7 +63,7 @@ impl JoinHandler {
 }
 
 impl TableColumns for JoinHandler {
-    fn resolve_name(&self, name: ColumnName) -> Result<ColumnName> {
+    fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn> {
         match self {
             Self::Join(join) => join.resolve_name(name),
             Self::Empty => Err(ExecutionError::NoColumn(name.to_string()).into()),
@@ -92,18 +99,21 @@ pub enum Join {
         right: Box<Join>,
         constraint: Option<Expression>,
         join_operator: JoinOperator,
+        exclude_columns: HashSet<ResolvedColumn>,
     },
 }
 
 impl TableColumns for Join {
-    fn resolve_name(&self, name: ColumnName) -> Result<ColumnName> {
+    fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn> {
         match self {
             Join::Table(table) => table.resolve_name(name),
             Join::Join { left, right, .. } => {
                 let left_resolved = left.resolve_name(name.clone());
                 let right_resolved = right.resolve_name(name);
                 match (left_resolved, right_resolved) {
-                    (Ok(l), Ok(_)) => Err(ExecutionError::AmbiguousName(l.destructure().1).into()),
+                    (Ok(l), Ok(_)) => {
+                        Err(ExecutionError::AmbiguousName(l.take_column_name()).into())
+                    }
                     (Ok(left), Err(_)) => Ok(left),
                     (Err(_), Ok(right)) => Ok(right),
                     (Err(e), Err(_)) => Err(e),
@@ -125,18 +135,88 @@ impl Join {
             } => {
                 let left = Box::new(Join::new(interpreter, *left)?);
                 let right = Box::new(Join::new(interpreter, *right)?);
-                let constraint = match constraint {
-                    JoinConstraint::On(constraint) => Some(resolve_column_names(
-                        constraint,
-                        &(left.as_ref(), right.as_ref()),
-                    )?),
-                    JoinConstraint::None => None,
+                let (constraint, exclude_columns) = match constraint {
+                    JoinConstraint::On(constraint) => (
+                        Some(resolve_expression(
+                            constraint,
+                            &(left.as_ref(), right.as_ref()),
+                        )?),
+                        HashSet::new(),
+                    ),
+                    JoinConstraint::Natural => {
+                        let mut left_columns: HashMap<_, _> = left
+                            .wildcard_column_names()
+                            .map(|c| {
+                                let (t, c) = c.destructure();
+                                (c, t)
+                            })
+                            .collect();
+                        let mut exclude_columns = HashSet::new();
+                        let mut constraint = Expression::Value(1.into());
+                        for right_column in right.wildcard_column_names() {
+                            if let Some((left_column, left_table)) =
+                                left_columns.remove_entry(right_column.column_name())
+                            {
+                                exclude_columns.insert(right_column.clone());
+                                let equals = Expression::BinaryOp(
+                                    Box::new(Expression::Identifier(ResolvedColumn::new(
+                                        left_table,
+                                        left_column,
+                                    ))),
+                                    BinaryOp::Comparison(ComparisonOp::Eq),
+                                    Box::new(Expression::Identifier(right_column)),
+                                );
+                                constraint = Expression::BinaryOp(
+                                    Box::new(constraint),
+                                    BinaryOp::And,
+                                    Box::new(equals),
+                                )
+                            }
+                        }
+                        (Some(constraint), exclude_columns)
+                    }
+                    JoinConstraint::Using(columns) => {
+                        let mut exclude_columns = HashSet::new();
+                        let mut constraint = Expression::Value(1.into());
+                        for column_name in columns {
+                            if let (Some(left_table), Some(right_table)) = (
+                                left.table_for_column(&column_name),
+                                right.table_for_column(&column_name),
+                            ) {
+                                exclude_columns.insert(ResolvedColumn::new(
+                                    right_table.to_owned(),
+                                    column_name.clone(),
+                                ));
+                                let equals = Expression::BinaryOp(
+                                    Box::new(Expression::Identifier(ResolvedColumn::new(
+                                        left_table.to_owned(),
+                                        column_name.clone(),
+                                    ))),
+                                    BinaryOp::Comparison(ComparisonOp::Eq),
+                                    Box::new(Expression::Identifier(ResolvedColumn::new(
+                                        right_table.to_owned(),
+                                        column_name,
+                                    ))),
+                                );
+                                constraint = Expression::BinaryOp(
+                                    Box::new(constraint),
+                                    BinaryOp::And,
+                                    Box::new(equals),
+                                )
+                            } else {
+                                return Err(ExecutionError::NoColumn(column_name).into());
+                            }
+                        }
+                        (Some(constraint), exclude_columns)
+                    }
+                    JoinConstraint::None => (None, HashSet::new()),
                 };
                 Self::Join {
                     left,
                     right,
                     join_operator: operator,
                     constraint,
+                    exclude_columns,
                 }
             }
         })
@@ -156,23 +236,47 @@ impl Join {
         self.table_iter().map(|t| t.aliased_table_name())
     }
 
-    pub fn all_column_names(&self) -> impl Iterator<Item = ColumnName> + '_ {
-        self.table_iter().flat_map(|t| {
-            t.column_names().map(move |c| {
-                ColumnName::new(Some(t.aliased_table_name().to_owned()), c.to_owned())
-            })
-        })
+    fn table_for_column(&'_ self, column_name: &str) -> Option<&'_ str> {
+        match self {
+            Join::Table(t) => t
+                .contains_column(column_name)
+                .then(|| t.aliased_table_name()),
+            Join::Join { left, right, .. } => left
+                .table_for_column(column_name)
+                .or_else(|| right.table_for_column(column_name)),
+        }
+    }
+
+    #[auto_enum(Iterator)]
+    pub fn wildcard_column_names(&self) -> impl Iterator<Item = ResolvedColumn> + '_ {
+        match self {
+            Join::Table(t) => t
+                .column_names()
+                .map(move |c| ResolvedColumn::new(t.aliased_table_name().to_owned(), c.to_owned())),
+            Join::Join {
+                left,
+                right,
+                exclude_columns,
+                ..
+            } => Box::new(
+                left.wildcard_column_names().chain(
+                    right
+                        .wildcard_column_names()
+                        .filter(move |c| !exclude_columns.contains(c)),
+                ),
+            ) as Box<dyn Iterator<Item = _>>,
+        }
     }
 
     pub fn column_names<'a>(
         &'a self,
         table_name: &str,
-    ) -> Result<Box<dyn Iterator<Item = ColumnName> + 'a>> {
+    ) -> Result<Box<dyn Iterator<Item = ResolvedColumn> + 'a>> {
         match self {
             Join::Table(t) => {
                 if t.aliased_table_name() == table_name {
                     Ok(Box::new(t.column_names().map(move |c| {
-                        ColumnName::new(Some(t.aliased_table_name().to_owned()), c.to_owned())
+                        ResolvedColumn::new(t.aliased_table_name().to_owned(), c.to_owned())
                     })))
                 } else {
                     Err(Error::Internal(format!(
@@ -224,6 +328,7 @@ impl Join {
                 right,
                 constraint,
                 join_operator,
+                ..
             } => {
                 let left_len = left.num_tables();
                 let left = Box::new(left.iter_inner()?);
@@ -317,7 +422,7 @@ impl<'a> JoinIter<'a> {
     pub fn get_next(&mut self) -> Result<Option<RowValue<'_>>> {
         while self.advance()? {
             if let Some(filter) = &self.filter {
-                if resolve_expression(filter, &(&self.inner, self.buffer.as_slice()))?.is_true() {
+                if evaluate_expression(filter, &(&self.inner, self.buffer.as_slice()))?.is_true() {
                     return Ok(Some(RowValue::new(self.buffer.as_slice())));
                 }
             } else {
@@ -368,7 +473,7 @@ impl<'a> JoinIterInner<'a> {
                         }
                         *initialise = false;
                         if let Some(constraint) = constraint {
-                            if resolve_expression(
+                            if evaluate_expression(
                                 constraint,
                                 &(left.as_ref(), right.as_ref(), &*buffer),
                             )?
@@ -399,7 +504,7 @@ impl<'a> JoinIterInner<'a> {
                                     return Ok(false);
                                 }
                             }
-                            if resolve_expression(
+                            if evaluate_expression(
                                 constraint,
                                 &(left.as_ref(), right.as_ref(), &*buffer),
                             )?
@@ -409,7 +514,7 @@ impl<'a> JoinIterInner<'a> {
                                 return Ok(true);
                             }
                         } else if right.advance(right_buffer)? {
-                            if resolve_expression(
+                            if evaluate_expression(
                                 constraint,
                                 &(left.as_ref(), right.as_ref(), &*buffer),
                             )?
@@ -442,7 +547,7 @@ impl<'a> JoinIterInner<'a> {
                                     return Ok(false);
                                 }
                             }
-                            if resolve_expression(
+                            if evaluate_expression(
                                 constraint,
                                 &(left.as_ref(), right.as_ref(), &*buffer),
                             )?
@@ -452,7 +557,7 @@ impl<'a> JoinIterInner<'a> {
                                 return Ok(true);
                             }
                         } else if left.advance(left_buffer)? {
-                            if resolve_expression(
+                            if evaluate_expression(
                                 constraint,
                                 &(left.as_ref(), right.as_ref(), &*buffer),
                             )?
@@ -541,7 +646,7 @@ impl<'a> RowValue<'a> {
 }
 
 impl<'a> GetData for (&'a JoinIterInner<'a>, &'a [TableRow]) {
-    fn get_data(&self, column_name: &ColumnName) -> Result<Value> {
+    fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value> {
         let (handler, row) = self;
         match handler {
             JoinIterInner::Table(_, handler) => {
@@ -555,9 +660,7 @@ impl<'a> GetData for (&'a JoinIterInner<'a>, &'a [TableRow]) {
                 ..
             } => {
                 let (left_row, right_row) = row.split_at(*left_len);
-                let table_name = column_name
-                    .table_name()
-                    .ok_or_else(|| Error::Internal("Unresolved table name".to_owned()))?;
+                let table_name = column_name.table_name();
                 if left.has_table(table_name) {
                     (left.as_ref(), left_row).get_data(column_name)
                 } else if right.has_table(table_name) {
@@ -574,7 +677,7 @@ impl<'a> GetData for (&'a JoinIterInner<'a>, &'a [TableRow]) {
 }
 
 impl<'a> GetData for (&'a Join, &'a [TableRow]) {
-    fn get_data(&self, column_name: &ColumnName) -> Result<Value> {
+    fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value> {
         let (handler, row) = self;
         match handler {
             Join::Table(handler) => {
@@ -584,9 +687,7 @@ impl<'a> GetData for (&'a Join, &'a [TableRow]) {
             Join::Join { left, right, .. } => {
                 let left_len = left.num_tables();
                 let (left_row, right_row) = row.split_at(left_len);
-                let table_name = column_name
-                    .table_name()
-                    .ok_or_else(|| Error::Internal("Unresolved table name".to_owned()))?;
+                let table_name = column_name.table_name();
                 if left.has_table(table_name) {
                     (left.as_ref(), left_row).get_data(column_name)
                 } else if right.has_table(table_name) {
@@ -603,7 +704,7 @@ impl<'a> GetData for (&'a Join, &'a [TableRow]) {
 }
 
 impl<'a> GetData for (&'a JoinHandler, &'a RowValue<'a>) {
-    fn get_data(&self, column_name: &ColumnName) -> Result<Value> {
+    fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value> {
         let (handler, row) = self;
         match (handler, row) {
             (JoinHandler::Join(j), RowValue::Data(d)) => (j, *d).get_data(column_name),
@@ -613,11 +714,9 @@ impl<'a> GetData for (&'a JoinHandler, &'a RowValue<'a>) {
 }
 
 impl<'a> GetData for (&'a JoinIterInner<'a>, &'a JoinIterInner<'a>, &'a [TableRow]) {
-    fn get_data(&self, column_name: &ColumnName) -> Result<Value> {
+    fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value> {
         let (left, right, buffer) = self;
-        let table_name = column_name
-            .table_name()
-            .ok_or_else(|| Error::Internal("Unresolved table name".to_owned()))?;
+        let table_name = column_name.table_name();
         let left_len = left.num_tables();
         let (left_buffer, right_buffer) = buffer.split_at(left_len);
         if left.has_table(table_name) {
@@ -634,7 +733,7 @@ impl<'a> GetData for (&'a JoinIterInner<'a>, &'a JoinIterInner<'a>, &'a [TableRo
 }
 
 impl TableColumns for (&Join, &Join) {
-    fn resolve_name(&self, name: ColumnName) -> Result<ColumnName> {
+    fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn> {
         let (left, right) = self;
         let left_resolved = left.resolve_name(name.clone());
         let right_resolved = right.resolve_name(name);

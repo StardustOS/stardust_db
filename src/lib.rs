@@ -8,6 +8,7 @@ use data_types::Value;
 use error::{ExecutionError, Result};
 use interpreter::{Interpreter, Relation};
 use query_process::process_query;
+use resolved_expression::ResolvedColumn;
 use sqlparser::{dialect::GenericDialect, parser::Parser};
 use storage::ColumnName;
 
@@ -17,6 +18,7 @@ pub mod error;
 pub mod interpreter;
 pub mod join_handler;
 pub mod query_process;
+pub mod resolved_expression;
 pub mod storage;
 pub mod table_definition;
 pub mod table_handler;
@@ -24,6 +26,7 @@ pub mod temporary_database;
 #[macro_use]
 mod utils;
 
+mod foreign_key;
 #[cfg(test)]
 pub mod tests;
 
@@ -47,6 +50,10 @@ impl Database {
             results.push(self.interpreter.execute(processed_query)?)
         }
         Ok(results)
+    }
+
+    pub fn was_recovered(&self) -> bool {
+        self.interpreter.was_recovered()
     }
 }
 
@@ -77,17 +84,23 @@ pub unsafe extern "C" fn open_database(path: *const c_char, db: *mut Db) -> c_in
 }
 
 pub trait GetData {
-    fn get_data(&self, column_name: &ColumnName) -> Result<Value>;
+    fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value>;
 }
 
-pub struct EmptyRow;
+pub struct Empty;
 
-impl GetData for EmptyRow {
-    fn get_data(&self, column_name: &ColumnName) -> Result<Value> {
+impl GetData for Empty {
+    fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value> {
         Err(ExecutionError::NoColumn(column_name.to_string()).into())
     }
 }
 
 pub trait TableColumns {
-    fn resolve_name(&self, name: ColumnName) -> Result<ColumnName>;
+    fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn>;
+}
+
+impl TableColumns for Empty {
+    fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn> {
+        Err(ExecutionError::NoColumn(name.to_string()).into())
+    }
 }
