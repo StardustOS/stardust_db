@@ -959,9 +959,9 @@ fn foreign_key_valid() {
     let db = temp_db();
     let _ = db
         .execute_query(
-            "CREATE TABLE foreign (name string);
+            "CREATE TABLE foreign (name string PRIMARY KEY);
             INSERT INTO foreign VALUES ('User');
-            CREATE TABLE primary (name string, age int, CONSTRAINT fkey0 FOREIGN KEY (name) REFERENCES foreign(name))",
+            CREATE TABLE primary (name string, age int, CONSTRAINT fkey FOREIGN KEY (name) REFERENCES foreign(name))",
         )
         .unwrap();
     let result = db
@@ -972,18 +972,30 @@ fn foreign_key_valid() {
 }
 
 #[test]
+fn foreign_key_not_unique() {
+    let db = temp_db();
+    let _ = db
+        .execute_query("CREATE TABLE foreign (name string);")
+        .unwrap();
+    let result = db.execute_query("CREATE TABLE primary (name string, age int, CONSTRAINT fkey FOREIGN KEY (name) REFERENCES foreign(name));");
+    assert!(
+        matches!(dbg!(result), Err(Error::Execution(ExecutionError::ForeignKeyNotUnique(key))) if key == "fkey")
+    )
+}
+
+#[test]
 fn foreign_key_missing() {
     let db = temp_db();
     let _ = db
         .execute_query(
-            "CREATE TABLE foreign (name string);
+            "CREATE TABLE foreign (name string UNIQUE);
             INSERT INTO foreign VALUES ('User');
-            CREATE TABLE primary (name string, age int, CONSTRAINT fkey1 FOREIGN KEY (name) REFERENCES foreign(name))",
+            CREATE TABLE primary (name string, age int, CONSTRAINT fkey FOREIGN KEY (name) REFERENCES foreign(name))",
         )
         .unwrap();
     let result = db.execute_query("INSERT INTO primary VALUES ('Unknown', 23);");
     assert!(
-        matches!(dbg!(result), Err(Error::Execution(ExecutionError::ForeignKeyConstraintFailed(err))) if err == "fkey1")
+        matches!(dbg!(result), Err(Error::Execution(ExecutionError::ForeignKeyConstraintFailed(err))) if err == "fkey")
     )
 }
 
@@ -992,14 +1004,85 @@ fn foreign_key_delete_referred() {
     let db = temp_db();
     let _ = db
         .execute_query(
-            "CREATE TABLE foreign (name string);
+            "CREATE TABLE foreign (name string PRIMARY KEY);
             INSERT INTO foreign VALUES ('User');
-            CREATE TABLE primary (name string, age int, CONSTRAINT fkey2 FOREIGN KEY (name) REFERENCES foreign(name));
+            CREATE TABLE primary (name string, age int, CONSTRAINT fkey FOREIGN KEY (name) REFERENCES foreign(name));
             INSERT INTO primary VALUES ('User', 23);",
         )
         .unwrap();
     let result = db.execute_query("DELETE FROM foreign WHERE name = 'User';");
     assert!(
-        matches!(dbg!(result), Err(Error::Execution(ExecutionError::ForeignKeyConstraintFailed(err))) if err == "fkey2")
+        matches!(dbg!(result), Err(Error::Execution(ExecutionError::ForeignKeyConstraintFailed(err))) if err == "fkey")
+    )
+}
+
+#[test]
+fn foreign_key_delete_set_default() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE foreign (name string UNIQUE);
+            INSERT INTO foreign VALUES ('User'), ('Gertrude');
+            CREATE TABLE primary (name string DEFAULT 'Gertrude', age int, FOREIGN KEY (name) REFERENCES foreign(name) ON DELETE SET DEFAULT);
+            INSERT INTO primary VALUES ('User', 23);
+            DELETE FROM foreign WHERE name = 'User';",
+        )
+        .unwrap();
+    let result = db.execute_query("SELECT * FROM primary").unwrap();
+    assert_eq!(result.len(), 1);
+    result[0].assert_equals(
+        set![vec!["Gertrude".into(), 23.into()]],
+        vec!["name", "age"],
+    )
+}
+
+#[test]
+fn foreign_key_delete_set_default_no_new_value() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE foreign (name string UNIQUE);
+            INSERT INTO foreign VALUES ('User');
+            CREATE TABLE primary (name string DEFAULT 'Gertrude', age int, CONSTRAINT fkey FOREIGN KEY (name) REFERENCES foreign(name) ON DELETE SET DEFAULT);
+            INSERT INTO primary VALUES ('User', 23);",
+        )
+        .unwrap();
+    let result = db.execute_query("DELETE FROM foreign WHERE name = 'User'");
+    assert!(
+        matches!(dbg!(result), Err(Error::Execution(ExecutionError::ForeignKeyConstraintFailed(key))) if key == "fkey")
+    )
+}
+
+#[test]
+fn foreign_key_delete_set_null() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE foreign (name string UNIQUE);
+            INSERT INTO foreign VALUES ('User');
+            CREATE TABLE primary (name string, age int, FOREIGN KEY (name) REFERENCES foreign(name) ON DELETE SET NULL);
+            INSERT INTO primary VALUES ('User', 23);
+            DELETE FROM foreign WHERE name = 'User';",
+        )
+        .unwrap();
+    let result = db.execute_query("SELECT * FROM primary").unwrap();
+    assert_eq!(result.len(), 1);
+    result[0].assert_equals(set![vec![Value::Null, 23.into()]], vec!["name", "age"])
+}
+
+#[test]
+fn foreign_key_delete_set_null_not_null() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE foreign (name string UNIQUE);
+            INSERT INTO foreign VALUES ('User');
+            CREATE TABLE primary (name string NOT NULL, age int, FOREIGN KEY (name) REFERENCES foreign(name) ON DELETE SET NULL);
+            INSERT INTO primary VALUES ('User', 23);",
+        )
+        .unwrap();
+    let result = db.execute_query("DELETE FROM foreign WHERE name = 'User';");
+    assert!(
+        matches!(dbg!(result), Err(Error::Execution(ExecutionError::NullConstraintFailed(key))) if key == "name")
     )
 }

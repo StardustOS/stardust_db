@@ -71,4 +71,6 @@ pub enum ExecutionError {
         parent_table: String,
         key_name: String,
     },
+    #[error("FOREIGN KEY constraint `{0}` does not refer to unique columns")]
+    ForeignKeyNotUnique(String),
 }

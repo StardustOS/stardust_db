@@ -1,6 +1,7 @@
 use std::{convert::TryInto, mem::size_of};
 
 use auto_enums::auto_enum;
+use itertools::Itertools;
 use sled::{IVec, Tree};
 
 use crate::{
@@ -85,6 +86,7 @@ impl TableHandler {
         interpreter: &Interpreter,
         new_row: Vec<Value>,
     ) -> Result<()> {
+        self.check_row(&new_row, interpreter)?;
         for key in interpreter
             .foreign_keys()?
             .parent_foreign_keys(self.unaliased_table_name(), interpreter)
@@ -92,7 +94,11 @@ impl TableHandler {
             let key = key?;
             key.check_parent_rows(&row, self, Action::Update(&new_row), interpreter)?;
         }
-        self.tree.insert(row.left, row.right)?;
+        let right = self
+            .table_definition
+            .columns()
+            .generate_row(new_row.into_iter())?;
+        self.tree.insert(row.left, right)?;
         Ok(())
     }
 
@@ -125,6 +131,15 @@ impl TableHandler {
         } else {
             uniques
         }
+    }
+
+    pub fn contains_unique(&self, column_set: Vec<usize>) -> bool {
+        for set in column_set.into_iter().powerset() {
+            if self.uniques().find(|(s, _)| *s == set).is_some() {
+                return true;
+            }
+        }
+        false
     }
 
     fn check_row(&self, row: &[Value], interpreter: &Interpreter) -> Result<()> {
@@ -167,7 +182,7 @@ impl TableHandler {
         }
         for foreign_key in interpreter
             .foreign_keys()?
-            .table_foreign_keys(self.unaliased_table_name(), interpreter)
+            .child_foreign_keys(self.unaliased_table_name(), interpreter)
         {
             foreign_key?.check_row_contains(row)?;
         }
@@ -178,7 +193,7 @@ impl TableHandler {
         self.table_definition.num_columns()
     }
 
-    pub fn get_default(&self, column_name: &str) -> Result<Value> {
+    pub fn get_default<K: ColumnKey>(&self, column_name: K) -> Result<Value> {
         self.table_definition.get_default(column_name)
     }
 
@@ -292,6 +307,45 @@ impl TableRow {
 
     pub fn is_empty(&self) -> bool {
         self.left.is_empty() && self.right.is_empty()
+    }
+}
+
+impl PartialEq for &TableRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.left == other.left
+    }
+}
+
+pub struct TableRowUpdater<'a> {
+    row: &'a TableRow,
+    handler: &'a TableHandler,
+    new_row: Vec<Value>,
+}
+
+impl<'a> TableRowUpdater<'a> {
+    pub fn new(row: &'a TableRow, handler: &'a TableHandler) -> Self {
+        let new_row = Vec::with_capacity(handler.num_columns());
+        Self {
+            row,
+            handler,
+            new_row,
+        }
+    }
+
+    pub fn add_update(&mut self, index: usize, new_value: Value) -> Result<()> {
+        for i in self.new_row.len()..index {
+            self.new_row.push(self.handler.get_value(i, &self.row)?);
+        }
+        self.new_row.push(new_value);
+        Ok(())
+    }
+
+    pub fn finalise(self) -> Result<Vec<Value>> {
+        let mut new_row = self.new_row;
+        for i in new_row.len()..self.handler.num_columns() {
+            new_row.push(self.handler.get_value(i, &self.row)?);
+        }
+        Ok(new_row)
     }
 }
 

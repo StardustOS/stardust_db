@@ -83,7 +83,7 @@ impl TableDefinition {
         self.columns.column_name(index)
     }
 
-    pub fn get_default(&self, column_name: &str) -> Result<Value> {
+    pub fn get_default<K: ColumnKey>(&self, column_name: K) -> Result<Value> {
         self.columns.get_default(column_name)
     }
 

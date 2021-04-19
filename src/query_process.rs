@@ -6,7 +6,7 @@ use crate::{
 };
 use itertools::Itertools;
 use sqlparser::ast::{
-    self, BinaryOperator, ColumnDef, ColumnOption, DataType, Expr, FileFormat,
+    self, Assignment, BinaryOperator, ColumnDef, ColumnOption, DataType, Expr, FileFormat,
     HiveDistributionStyle, HiveFormat, Ident, Join, ObjectName, ObjectType, Query,
     ReferentialAction, Select, SelectItem, SetExpr, SqlOption, SqliteOnConflict, Statement,
     TableConstraint, TableFactor, TableWithJoins, Value,
@@ -80,6 +80,11 @@ pub fn process_query(statement: Statement) -> Result<SqlQuery> {
             table_name,
             selection,
         } => SqlQuery::Delete(parse_delete(table_name, selection)),
+        Statement::Update {
+            table_name,
+            assignments,
+            selection,
+        } => SqlQuery::Update(parse_update(table_name, assignments, selection)),
         _ => unimplemented!(),
     })
 }
@@ -548,4 +553,14 @@ fn parse_foreign_key_action(action: ReferentialAction) -> ForeignKeyAction {
         ReferentialAction::SetNull => ForeignKeyAction::SetNull,
         ReferentialAction::SetDefault => ForeignKeyAction::SetDefault,
     }
+}
+
+fn parse_update(name: ObjectName, assignments: Vec<Assignment>, selection: Option<Expr>) -> Update {
+    let table_name = name.to_string();
+    let assignments = assignments
+        .into_iter()
+        .map(|a| (a.id.to_string(), parse_expression(a.value)))
+        .collect();
+    let filter = selection.map(parse_expression);
+    Update::new(table_name, assignments, filter)
 }

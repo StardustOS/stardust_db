@@ -1,19 +1,20 @@
 use crate::{
     ast::{
         BinaryOp, Column, CreateTable, Delete, DropTable, Insert, Projection, SelectContents,
-        SelectQuery, SqlQuery, TableName, UnresolvedExpression, Values,
+        SelectQuery, SqlQuery, TableName, UnresolvedExpression, Update, Values,
     },
-    data_types::Value,
+    data_types::{Type, Value},
     error::{Error, ExecutionError, Result},
     foreign_key::ForeignKeys,
     join_handler::JoinHandler,
     resolved_expression::Expression,
     storage::Columns,
     table_definition::TableDefinition,
-    table_handler::TableHandler,
+    table_handler::{TableHandler, TableRowUpdater},
     Empty, GetData, TableColumns,
 };
 use itertools::Itertools;
+use once_cell::sync::OnceCell;
 use sled::{open, Db};
 use std::{
     collections::HashSet,
@@ -23,6 +24,7 @@ use std::{
 
 pub struct Interpreter {
     db: Db,
+    foreign_keys: OnceCell<TableHandler>,
 }
 
 impl Interpreter {
@@ -31,7 +33,10 @@ impl Interpreter {
     }
 
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Interpreter> {
-        Ok(Interpreter { db: open(path)? })
+        Ok(Interpreter {
+            db: open(path)?,
+            foreign_keys: OnceCell::new(),
+        })
     }
 
     pub fn execute(&self, query: SqlQuery) -> Result<Relation> {
@@ -41,6 +46,7 @@ impl Interpreter {
             SqlQuery::SelectQuery(select) => self.execute_select(select),
             SqlQuery::DropTable(drop_table) => self.execute_drop_table(drop_table),
             SqlQuery::Delete(delete) => self.execute_delete(delete),
+            SqlQuery::Update(update) => self.execute_update(update),
         }?;
         self.db.flush()?;
         Ok(result)
@@ -68,7 +74,19 @@ impl Interpreter {
     }
 
     pub fn foreign_keys(&self) -> Result<ForeignKeys> {
-        ForeignKeys::open(self)
+        let handler = self.foreign_keys.get_or_try_init(|| {
+            let mut columns = Columns::new();
+            columns.add_column("name".to_owned(), Type::String, Value::Null)?;
+            columns.add_column("table".to_owned(), Type::String, Value::Null)?;
+            columns.add_column("columns".to_owned(), Type::String, Value::Null)?;
+            columns.add_column("referred_table".to_owned(), Type::String, Value::Null)?;
+            columns.add_column("referred_columns".to_owned(), Type::String, Value::Null)?;
+            columns.add_column("on_delete".to_owned(), Type::Integer, Value::Null)?;
+            columns.add_column("on_update".to_owned(), Type::Integer, Value::Null)?;
+
+            self.open_internal_table("@foreign_keys".to_owned(), columns)
+        })?;
+        Ok(ForeignKeys::new(handler))
     }
 
     pub fn tables(&self) -> Result<Vec<TableHandler>> {
@@ -102,6 +120,14 @@ impl Interpreter {
 
         for key in foreign_keys {
             let foreign_table = self.open_table(TableName::new(key.foreign_table.clone(), None))?;
+            let referred_columns_indexes = key
+                .referred_columns
+                .iter()
+                .map(|s| foreign_table.column_index(s.as_str()))
+                .collect::<Result<_>>()?;
+            if !foreign_table.contains_unique(referred_columns_indexes) {
+                return Err(ExecutionError::ForeignKeyNotUnique(key.name).into());
+            }
             for (this_column, referred_column) in
                 key.columns.iter().zip(key.referred_columns.iter())
             {
@@ -286,6 +312,36 @@ impl Interpreter {
         Ok(Relation::default())
     }
 
+    fn execute_update(&self, update: Update) -> Result<Relation> {
+        let Update {
+            table_name,
+            assignments,
+            filter,
+        } = update;
+        let table = self.open_table(TableName::new(table_name, None))?;
+        let mut iter = table.iter();
+        let mut assignments = assignments
+            .into_iter()
+            .map(|(c, e)| Ok((table.column_index(&c)?, resolve_expression(e, &table)?)))
+            .collect::<Result<Vec<_>>>()?;
+        assignments.sort_unstable_by_key(|(i, _)| *i);
+        let filter = filter
+            .map(|p| resolve_expression(p, &table))
+            .transpose()?
+            .unwrap_or_else(|| Expression::Value(1.into()));
+        for row in iter.filter_where(&filter, &table) {
+            let row = row?;
+            let mut new_row = TableRowUpdater::new(&row, &table);
+            for (column, new_value_expression) in &assignments {
+                let new_value = evaluate_expression(&new_value_expression, &(&table, &row))?;
+                new_row.add_update(*column, new_value)?;
+            }
+            let new_row = new_row.finalise()?;
+            table.update_row(row, &self, new_row)?;
+        }
+        Ok(Relation::default())
+    }
+
     fn generate_results(
         &self,
         result_column_names: Vec<String>,
@@ -366,6 +422,7 @@ impl Relation {
         assert_eq!(self.rows.len(), rows.len());
 
         assert_eq!(self.column_names, column_names);
+        dbg!(&self.rows);
 
         for row in &self.rows {
             assert!(rows.contains(row));

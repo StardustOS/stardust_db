@@ -150,11 +150,8 @@ impl Columns {
         self.columns.get(column).map(|c| c.get_type())
     }
 
-    pub fn get_default(&self, column: &str) -> Result<Value> {
-        self.columns
-            .get(column)
-            .map(|e| e.default_value())
-            .ok_or_else(|| ExecutionError::NoColumn(column.to_owned()).into())
+    pub fn get_default<K: ColumnKey>(&self, column: K) -> Result<Value> {
+        column.get_entry(&self.columns).map(|e| e.default_value())
     }
 
     pub fn column_name(&self, index: usize) -> Result<&str> {

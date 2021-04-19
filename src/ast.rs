@@ -18,6 +18,7 @@ pub enum SqlQuery {
     SelectQuery(SelectQuery),
     DropTable(DropTable),
     Delete(Delete),
+    Update(Update),
 }
 
 #[derive(Debug)]
@@ -372,6 +373,27 @@ impl Delete {
         Self {
             table_name,
             predicate,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Update {
+    pub table_name: String,
+    pub assignments: Vec<(String, UnresolvedExpression)>,
+    pub filter: Option<UnresolvedExpression>,
+}
+
+impl Update {
+    pub fn new(
+        table_name: String,
+        assignments: Vec<(String, UnresolvedExpression)>,
+        filter: Option<UnresolvedExpression>,
+    ) -> Self {
+        Self {
+            table_name,
+            assignments,
+            filter,
         }
     }
 }

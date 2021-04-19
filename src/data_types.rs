@@ -158,6 +158,10 @@ impl Comparison {
     pub fn is_equal(&self) -> bool {
         matches!(self, Comparison::Equal)
     }
+
+    pub fn is_equal_or_null(&self) -> bool {
+        matches!(self, Comparison::Equal | Comparison::Unknown)
+    }
 }
 
 impl From<Ordering> for Comparison {
@@ -223,6 +227,10 @@ impl Value {
 
     pub fn or(&self, other: &Self) -> Self {
         self.get_truth().or(other.get_truth()).into()
+    }
+
+    pub fn equals_or_null(&self, other: &Value) -> bool {
+        self.compare(other).is_equal_or_null()
     }
 
     pub fn compare(&self, other: &Value) -> Comparison {
