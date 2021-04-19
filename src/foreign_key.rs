@@ -270,7 +270,10 @@ impl ParentKeyChecker {
             let parent_row = parent_row?;
             for (child, parent) in self.child_columns.iter().zip(self.parent_columns.iter()) {
                 let foreign_value = self.parent_handler.get_value(*parent, &parent_row)?;
-                if !handler.get_value(*child, this_row)?.equals_or_null(&foreign_value) {
+                if !handler
+                    .get_value(*child, this_row)?
+                    .equals_or_null(&foreign_value)
+                {
                     continue 'row;
                 }
             }

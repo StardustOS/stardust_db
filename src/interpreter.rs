@@ -1,18 +1,7 @@
-use crate::{
-    ast::{
+use crate::{Empty, GetData, TableColumns, ast::{
         BinaryOp, Column, CreateTable, Delete, DropTable, Insert, Projection, SelectContents,
         SelectQuery, SqlQuery, TableName, UnresolvedExpression, Update, Values,
-    },
-    data_types::{Type, Value},
-    error::{Error, ExecutionError, Result},
-    foreign_key::ForeignKeys,
-    join_handler::JoinHandler,
-    resolved_expression::Expression,
-    storage::Columns,
-    table_definition::TableDefinition,
-    table_handler::{TableHandler, TableRowUpdater},
-    Empty, GetData, TableColumns,
-};
+    }, data_types::{Type, Value}, error::{Error, ExecutionError, Result}, foreign_key::ForeignKeys, join_handler::JoinHandler, resolved_expression::Expression, storage::Columns, table_definition::TableDefinition, table_handler::{RowBuilder, TableHandler, TableRowUpdater}};
 use itertools::Itertools;
 use once_cell::sync::OnceCell;
 use sled::{open, Db};
@@ -87,18 +76,6 @@ impl Interpreter {
             self.open_internal_table("@foreign_keys".to_owned(), columns)
         })?;
         Ok(ForeignKeys::new(handler))
-    }
-
-    pub fn tables(&self) -> Result<Vec<TableHandler>> {
-        self.db
-            .tree_names()
-            .into_iter()
-            .filter_map(|n| {
-                let name = String::from_utf8(n.as_ref().into()).unwrap();
-                name.starts_with('@').then(|| name)
-            })
-            .map(|name| self.open_table(TableName::new(name, None)))
-            .collect::<Result<Vec<_>>>()
     }
 
     fn execute_create_table(&self, create_table: CreateTable) -> Result<Relation> {
@@ -194,18 +171,12 @@ impl Interpreter {
                 .into());
             }
             for row in values.take_rows() {
-                let mut peekable = row.into_iter().zip(specified_columns.iter()).peekable();
-                let mut row_values = Vec::with_capacity(table.num_columns());
-                for column_name in table.column_names() {
-                    match peekable.peek() {
-                        Some((_, name)) if column_name == name.as_str() => {
-                            let (value, _) = peekable.next().unwrap();
-                            row_values.push(value);
-                        }
-                        _ => row_values.push(table.get_default(column_name)?),
-                    }
+                let mut new_row = RowBuilder::new(&table);
+                for (key, value) in specified_columns.iter().zip(row.into_iter()) {
+                    new_row.insert(key.as_str(), value)?;
                 }
-                table.insert_values(row_values, self)?;
+                let new_row = new_row.finalise()?;
+                table.insert_values(new_row, self)?;
             }
         } else {
             if values.num_columns() != table.num_columns() {
@@ -272,9 +243,7 @@ impl Interpreter {
             }
             SelectQuery::Values(values) => {
                 let Values { rows } = values;
-                if rows.is_empty() {
-                    return Ok(Relation::default());
-                }
+                assert!(!rows.is_empty());
                 let mut columns = Vec::with_capacity(rows[0].len());
                 for expression in &rows[0] {
                     let name = expression.to_string();
@@ -365,6 +334,9 @@ impl Interpreter {
         for name in drop_table.names {
             self.foreign_keys()?.process_drop_table(&name, self)?;
             let directory = self.db.open_tree("@tables")?;
+            if !drop_table.if_exists && !directory.contains_key(name.as_bytes())? {
+                return Err(ExecutionError::NoTable(name).into());
+            }
             directory.remove(name.as_bytes())?;
             self.db.drop_tree(name.as_bytes())?;
         }
@@ -477,6 +449,18 @@ where
                 BinaryOp::Comparison(c) => {
                     let comparison_result = left.compare(&right);
                     Ok(comparison_result.get_value(c))
+                }
+                BinaryOp::Mathematical(m) => {
+                    let left = left.cast(&Type::Integer).assume_integer()?;
+                    let right = right.cast(&Type::Integer).assume_integer()?;
+                    let result = match m {
+                        crate::ast::MathematicalOp::Add => (left + right).into(),
+                        crate::ast::MathematicalOp::Subtract => (left - right).into(),
+                        crate::ast::MathematicalOp::Multiply => (left * right).into(),
+                        crate::ast::MathematicalOp::Divide => left.checked_div(right).map_or(Value::Null, Value::from),
+                        crate::ast::MathematicalOp::Modulus => left.checked_rem(right).map_or(Value::Null, Value::from)
+                    };
+                    Ok(result)
                 }
             }
         }

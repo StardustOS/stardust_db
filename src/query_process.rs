@@ -366,6 +366,31 @@ fn parse_expression(expression: Expr) -> UnresolvedExpression {
                     BinaryOp::Comparison(ComparisonOp::GtEq),
                     right,
                 ),
+                BinaryOperator::Plus => UnresolvedExpression::BinaryOp(
+                    left,
+                    BinaryOp::Mathematical(MathematicalOp::Add),
+                    right,
+                ),
+                BinaryOperator::Minus => UnresolvedExpression::BinaryOp(
+                    left,
+                    BinaryOp::Mathematical(MathematicalOp::Subtract),
+                    right,
+                ),
+                BinaryOperator::Multiply => UnresolvedExpression::BinaryOp(
+                    left,
+                    BinaryOp::Mathematical(MathematicalOp::Multiply),
+                    right,
+                ),
+                BinaryOperator::Divide => UnresolvedExpression::BinaryOp(
+                    left,
+                    BinaryOp::Mathematical(MathematicalOp::Divide),
+                    right,
+                ),
+                BinaryOperator::Modulus => UnresolvedExpression::BinaryOp(
+                    left,
+                    BinaryOp::Mathematical(MathematicalOp::Modulus),
+                    right,
+                ),
                 _ => unimplemented!("{:?}", op),
             }
         }
@@ -517,7 +542,7 @@ fn parse_join_constraint(constraint: ast::JoinConstraint) -> JoinConstraint {
 
 fn parse_drop(
     object_type: ObjectType,
-    _if_exists: bool,
+    if_exists: bool,
     names: Vec<ObjectName>,
     _cascade: bool,
     _purge: bool,
@@ -525,7 +550,7 @@ fn parse_drop(
     match object_type {
         ObjectType::Table => {
             let names = names.into_iter().map(|name| name.to_string()).collect();
-            DropTable::new(names)
+            DropTable::new(if_exists, names)
         }
         _ => unimplemented!("{:?}", object_type),
     }

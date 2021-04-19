@@ -219,6 +219,7 @@ pub enum BinaryOp {
     And,
     Or,
     Comparison(ComparisonOp),
+    Mathematical(MathematicalOp)
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -231,12 +232,22 @@ pub enum ComparisonOp {
     LtEq,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum MathematicalOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulus
+}
+
 impl std::fmt::Display for BinaryOp {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             BinaryOp::And => write!(f, "AND"),
             BinaryOp::Or => write!(f, "OR"),
             BinaryOp::Comparison(c) => std::fmt::Display::fmt(c, f),
+            BinaryOp::Mathematical(m) => std::fmt::Display::fmt(m, f),
         }
     }
 }
@@ -257,6 +268,22 @@ impl std::fmt::Display for ComparisonOp {
         )
     }
 }
+
+impl std::fmt::Display for MathematicalOp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                MathematicalOp::Add => "+",
+                MathematicalOp::Subtract => "-",
+                MathematicalOp::Multiply => "*",
+                MathematicalOp::Divide => "/",
+                MathematicalOp::Modulus => "%"
+            }
+        )
+    }
+} 
 
 #[derive(Debug)]
 pub struct SelectContents {
@@ -353,12 +380,13 @@ pub enum JoinConstraint {
 
 #[derive(Debug)]
 pub struct DropTable {
+    pub if_exists: bool,
     pub names: Vec<String>,
 }
 
 impl DropTable {
-    pub fn new(names: Vec<String>) -> Self {
-        Self { names }
+    pub fn new(if_exists: bool, names: Vec<String>) -> Self {
+        Self { if_exists, names }
     }
 }
 

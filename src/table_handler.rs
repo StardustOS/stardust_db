@@ -1,4 +1,4 @@
-use std::{convert::TryInto, mem::size_of};
+use std::{collections::HashSet, convert::TryInto, mem::size_of};
 
 use auto_enums::auto_enum;
 use itertools::Itertools;
@@ -344,6 +344,33 @@ impl<'a> TableRowUpdater<'a> {
         let mut new_row = self.new_row;
         for i in new_row.len()..self.handler.num_columns() {
             new_row.push(self.handler.get_value(i, &self.row)?);
+        }
+        Ok(new_row)
+    }
+}
+
+pub struct RowBuilder<'a> {
+    handler: &'a TableHandler,
+    new_row: Vec<Value>,
+    inserted: HashSet<usize>
+}
+
+impl<'a> RowBuilder<'a> {
+    pub fn new(handler: &'a TableHandler) -> Self { Self { handler, new_row: vec![Value::Null; handler.num_columns()], inserted: HashSet::new() } }
+
+    pub fn insert(&mut self, column: &str, value: Value) -> Result<()> {
+        let index = self.handler.column_index(column)?;
+        self.inserted.insert(index);
+        self.new_row[index] = value;
+        Ok(())
+    }
+
+    pub fn finalise(self) -> Result<Vec<Value>> {
+        let mut new_row = self.new_row;
+        for i in 0..self.handler.num_columns() {
+            if !self.inserted.contains(&i) {
+                new_row[i] = self.handler.get_default(i)?;
+            }
         }
         Ok(new_row)
     }
