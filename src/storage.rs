@@ -284,3 +284,9 @@ fn get_unsized_data(dictionary_position: usize, end_position: usize, row: &[u8])
         u16::from_be_bytes(row[dictionary_position..next_start].try_into().unwrap()) as usize;
     &row[data_position..end]
 }
+
+impl AsRef<Columns> for Columns {
+    fn as_ref(&self) -> &Columns {
+        self
+    }
+}

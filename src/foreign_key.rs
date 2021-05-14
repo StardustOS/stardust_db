@@ -3,20 +3,21 @@ use std::convert::TryInto;
 use co_sort::{co_sort, Permutation};
 
 use crate::{
-    ast::{ForeignKey, ForeignKeyAction, TableName},
+    ast::{ForeignKey, ForeignKeyAction},
     data_types::{IntegerStorage, Value},
     error::{ExecutionError, Result},
     interpreter::Interpreter,
+    storage::Columns,
     table_handler::{TableHandler, TableRow, TableRowUpdater},
 };
 
 #[derive(Debug)]
-pub struct ForeignKeys<'a> {
-    handler: &'a TableHandler,
+pub struct ForeignKeys<'a, C: AsRef<Columns>, N: AsRef<str>> {
+    handler: &'a TableHandler<C, N>,
 }
 
-impl<'a> ForeignKeys<'a> {
-    pub fn new(handler: &'a TableHandler) -> Self {
+impl<'a, C: AsRef<Columns>, N: AsRef<str>> ForeignKeys<'a, C, N> {
+    pub fn new(handler: &'a TableHandler<C, N>) -> Self {
         Self { handler }
     }
 
@@ -97,8 +98,7 @@ impl<'a> ForeignKeys<'a> {
                         .handler
                         .get_value("referred_table", &row)?
                         .assume_string()?;
-                    let foreign_handler =
-                        interpreter.open_table(TableName::new(foreign_table, None))?;
+                    let foreign_handler = interpreter.open_table(foreign_table, None)?;
                     let mut foreign_columns = self
                         .handler
                         .get_value("referred_columns", &row)?
@@ -142,8 +142,7 @@ impl<'a> ForeignKeys<'a> {
                         .split('|')
                         .map(|c| self.handler.column_index(c))
                         .collect::<Result<_>>()?;
-                    let parent_handler =
-                        interpreter.open_table(TableName::new(parent_table, None))?;
+                    let parent_handler = interpreter.open_table(parent_table, None)?;
                     let mut child_columns: Vec<usize> = self
                         .handler
                         .get_value("referred_columns", &row)?
@@ -188,7 +187,7 @@ pub enum Action<'a> {
 pub struct ChildKeyChecker {
     name: String,
     this_columns: Vec<usize>,
-    foreign_handler: TableHandler,
+    foreign_handler: TableHandler<Columns, String>,
     foreign_columns: Vec<usize>,
 }
 
@@ -196,7 +195,7 @@ impl ChildKeyChecker {
     pub fn new(
         name: String,
         this_columns: Vec<usize>,
-        foreign_handler: TableHandler,
+        foreign_handler: TableHandler<Columns, String>,
         foreign_columns: Vec<usize>,
     ) -> Self {
         Self {
@@ -229,7 +228,7 @@ impl ChildKeyChecker {
 pub struct ParentKeyChecker {
     name: String,
     child_columns: Vec<usize>,
-    parent_handler: TableHandler,
+    parent_handler: TableHandler<Columns, String>,
     parent_columns: Vec<usize>,
     on_update: ForeignKeyAction,
     on_delete: ForeignKeyAction,
@@ -239,7 +238,7 @@ impl ParentKeyChecker {
     pub fn new(
         name: String,
         child_columns: Vec<usize>,
-        parent_handler: TableHandler,
+        parent_handler: TableHandler<Columns, String>,
         parent_columns: Vec<usize>,
         on_update: ForeignKeyAction,
         on_delete: ForeignKeyAction,
@@ -255,10 +254,10 @@ impl ParentKeyChecker {
         }
     }
 
-    pub fn check_parent_rows(
+    pub fn check_parent_rows<H: AsRef<Columns>, N: AsRef<str>>(
         self,
         this_row: &TableRow,
-        handler: &TableHandler,
+        handler: &TableHandler<H, N>,
         action: Action,
         interpreter: &Interpreter,
     ) -> Result<()> {

@@ -405,7 +405,9 @@ fn insert_check_valid() {
 fn insert_check_invalid() {
     let db = temp_db();
     let _ = db
-        .execute_query("CREATE TABLE test (name string, age int, CONSTRAINT young CHECK (age < 30));")
+        .execute_query(
+            "CREATE TABLE test (name string, age int, CONSTRAINT young CHECK (age < 30));",
+        )
         .unwrap();
     let result = db.execute_query("INSERT INTO test VALUES ('User', 30);");
     assert!(
@@ -446,14 +448,12 @@ fn delete_all() {
     let _ = db
         .execute_query(
             "INSERT INTO test VALUES ('User', 25), ('User2', 23);
-        DELETE FROM test")
+        DELETE FROM test",
+        )
         .unwrap();
     let result = db.execute_query("SELECT * FROM test;").unwrap();
     assert_eq!(result.len(), 1);
-    result[0].assert_equals(
-        set![],
-        vec!["name", "age"],
-    )
+    result[0].assert_equals(set![], vec!["name", "age"])
 }
 
 #[test]
@@ -465,7 +465,8 @@ fn delete_predicate() {
     let _ = db
         .execute_query(
             "INSERT INTO test VALUES ('User', 25), ('User2', 23);
-        DELETE FROM test WHERE age < 25")
+        DELETE FROM test WHERE age < 25",
+        )
         .unwrap();
     let result = db.execute_query("SELECT * FROM test;").unwrap();
     assert_eq!(result.len(), 1);
@@ -484,7 +485,8 @@ fn delete_none_predicate() {
     let _ = db
         .execute_query(
             "INSERT INTO test VALUES ('User', 25), ('User2', 23);
-        DELETE FROM test WHERE age > 25")
+        DELETE FROM test WHERE age > 25",
+        )
         .unwrap();
     let result = db.execute_query("SELECT * FROM test;").unwrap();
     assert_eq!(result.len(), 1);
@@ -567,25 +569,19 @@ fn select_multiple_tables_qualified_wildcard() {
         INSERT INTO hobbies VALUES ('Josh', 'Music'), ('Hugh', 'Swimming');",
         )
         .unwrap();
-    let result = db.execute_query("SELECT people.*, hobbies.hobby FROM people, hobbies;").unwrap();
+    let result = db
+        .execute_query("SELECT people.*, hobbies.hobby FROM people, hobbies;")
+        .unwrap();
     assert_eq!(result.len(), 1);
     result[0].assert_equals(
         set![
-            vec![
-                Value::from("Josh"),
-                Value::from(23),
-                Value::from("Music")
-            ],
+            vec![Value::from("Josh"), Value::from(23), Value::from("Music")],
             vec![
                 Value::from("Josh"),
                 Value::from(23),
                 Value::from("Swimming")
             ],
-            vec![
-                Value::from("Rupert"),
-                Value::from(25),
-                Value::from("Music")
-            ],
+            vec![Value::from("Rupert"), Value::from(25), Value::from("Music")],
             vec![
                 Value::from("Rupert"),
                 Value::from(25),
@@ -1372,10 +1368,13 @@ fn update_single_row() {
         .unwrap();
     let result = db.execute_query("SELECT * FROM test").unwrap();
     assert_eq!(result.len(), 1);
-    result[0].assert_equals(set![
-        vec!["User".into(), 25.into()],
-        vec!["User2".into(), 27.into()],
-    ], vec!["name", "age"])
+    result[0].assert_equals(
+        set![
+            vec!["User".into(), 25.into()],
+            vec!["User2".into(), 27.into()],
+        ],
+        vec!["name", "age"],
+    )
 }
 
 #[test]
@@ -1390,10 +1389,13 @@ fn update_multiple_rows() {
         .unwrap();
     let result = db.execute_query("SELECT * FROM test").unwrap();
     assert_eq!(result.len(), 1);
-    result[0].assert_equals(set![
-        vec!["User".into(), 25.into()],
-        vec!["User2".into(), 25.into()],
-    ], vec!["name", "age"])
+    result[0].assert_equals(
+        set![
+            vec!["User".into(), 25.into()],
+            vec!["User2".into(), 25.into()],
+        ],
+        vec!["name", "age"],
+    )
 }
 
 #[test]
@@ -1408,8 +1410,11 @@ fn update_self_referential() {
         .unwrap();
     let result = db.execute_query("SELECT * FROM test").unwrap();
     assert_eq!(result.len(), 1);
-    result[0].assert_equals(set![
-        vec!["User".into(), 46.into()],
-        vec!["User2".into(), 54.into()],
-    ], vec!["name", "age"])
+    result[0].assert_equals(
+        set![
+            vec!["User".into(), 46.into()],
+            vec!["User2".into(), 54.into()],
+        ],
+        vec!["name", "age"],
+    )
 }

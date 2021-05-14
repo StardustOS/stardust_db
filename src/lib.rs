@@ -1,15 +1,12 @@
-use std::{
-    ffi::CStr,
-    os::raw::{c_char, c_int},
-    path::Path,
-};
+use std::path::Path;
 
+pub use c_interface::*;
 use data_types::Value;
 use error::{ExecutionError, Result};
 use interpreter::{Interpreter, Relation};
 use query_process::process_query;
 use resolved_expression::ResolvedColumn;
-use sqlparser::{dialect::GenericDialect, parser::Parser};
+use sqlparser::{dialect::Dialect, parser::Parser};
 use storage::ColumnName;
 
 pub mod ast;
@@ -26,9 +23,34 @@ pub mod temporary_database;
 #[macro_use]
 mod utils;
 
+mod c_interface;
 mod foreign_key;
 #[cfg(test)]
 pub mod tests;
+
+#[derive(Debug, Default)]
+struct StardustDbDialect;
+
+impl Dialect for StardustDbDialect {
+    fn is_identifier_start(&self, ch: char) -> bool {
+        ('a'..='z').contains(&ch)
+            || ('A'..='Z').contains(&ch)
+            || ch == '_'
+            || ch == '#'
+            || ch == '@'
+            || ch == '?'
+    }
+
+    fn is_identifier_part(&self, ch: char) -> bool {
+        ('a'..='z').contains(&ch)
+            || ('A'..='Z').contains(&ch)
+            || ('0'..='9').contains(&ch)
+            || ch == '@'
+            || ch == '$'
+            || ch == '#'
+            || ch == '_'
+    }
+}
 
 pub struct Database {
     interpreter: Interpreter,
@@ -42,12 +64,20 @@ impl Database {
     }
 
     pub fn execute_query(&self, sql: &str) -> Result<Vec<Relation>> {
-        let dialect = GenericDialect {};
+        self.execute_query_inner(sql, &[])
+    }
+
+    pub fn execute_parameterised_query(&self, sql: &str, parameters: Vec<Value>) -> Result<Vec<Relation>> {
+        self.execute_query_inner(sql, &parameters)
+    }
+
+    pub fn execute_query_inner(&self, sql: &str, parameters: &[Value]) -> Result<Vec<Relation>> {
+        let dialect = StardustDbDialect {};
         let statements = Parser::parse_sql(&dialect, &sql)?;
         let mut results = Vec::with_capacity(statements.len());
         for statement in statements {
             let processed_query = process_query(statement)?;
-            results.push(self.interpreter.execute(processed_query)?)
+            results.push(self.interpreter.execute(processed_query, parameters)?)
         }
         Ok(results)
     }
@@ -55,32 +85,6 @@ impl Database {
     pub fn was_recovered(&self) -> bool {
         self.interpreter.was_recovered()
     }
-}
-
-pub const STARDUST_DB_OK: c_int = 0;
-pub const STARDUST_DB_INVALID_PATH_UTF_8: c_int = 1;
-pub const STARDUST_DB_INVALID_PATH_LOCATION: c_int = 2;
-
-#[repr(C)]
-pub struct Db {
-    database: *mut Database,
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn open_database(path: *const c_char, db: *mut Db) -> c_int {
-    let path = CStr::from_ptr(path);
-    let path = match path.to_str() {
-        Ok(path) => path,
-        Err(_) => return STARDUST_DB_INVALID_PATH_UTF_8,
-    };
-    let mut database = match Database::open(path) {
-        Ok(db) => db,
-        Err(_) => return STARDUST_DB_INVALID_PATH_LOCATION,
-    };
-    *db = Db {
-        database: &mut database,
-    };
-    STARDUST_DB_OK
 }
 
 pub trait GetData {

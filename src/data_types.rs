@@ -45,10 +45,7 @@ impl Type {
 
     pub fn get_contents_from_string(&self, data: String) -> TypeContents {
         match self {
-            /*Type::Integer => TypeContents::Integer(data.parse().map_err(|e: ParseIntError| {
-                ExecutionError::ParseError(data, *self, e.to_string())
-            })?),*/
-            Type::Integer => TypeContents::Integer(data.parse().unwrap_or_default()),
+            Type::Integer => TypeContents::Integer(string_to_int(&data)),
             Type::String => TypeContents::String(data),
         }
     }
@@ -107,7 +104,7 @@ impl From<&TypeContents> for IntegerStorage {
     fn from(contents: &TypeContents) -> Self {
         match contents {
             TypeContents::Integer(i) => *i,
-            TypeContents::String(s) => s.parse().unwrap_or_default(),
+            TypeContents::String(s) => string_to_int(s),
         }
     }
 }
@@ -182,6 +179,22 @@ impl Value {
         }
     }
 
+    pub fn cast_string(&self) -> Option<Cow<str>> {
+        match self {
+            Self::Null => None,
+            Self::TypedValue(TypeContents::String(s)) => Some(Cow::Borrowed(s.as_str())),
+            Self::TypedValue(TypeContents::Integer(i)) => Some(Cow::Owned(i.to_string())),
+        }
+    }
+
+    pub fn cast_int(&self) -> Option<IntegerStorage> {
+        match self {
+            Self::Null => None,
+            Self::TypedValue(TypeContents::String(s)) => Some(string_to_int(s)),
+            Self::TypedValue(TypeContents::Integer(i)) => Some(*i),
+        }
+    }
+
     pub fn assume_string(self) -> Result<String> {
         match self {
             Self::TypedValue(TypeContents::String(s)) => Ok(s),
@@ -247,23 +260,11 @@ impl Value {
             (
                 Self::TypedValue(TypeContents::String(s)),
                 Self::TypedValue(TypeContents::Integer(i)),
-            ) => {
-                if let Ok(i2) = s.parse::<IntegerStorage>() {
-                    i2.cmp(i).into()
-                } else {
-                    s.cmp(&i.to_string()).into()
-                }
-            }
+            ) => string_to_int(s).cmp(i).into(),
             (
                 Self::TypedValue(TypeContents::Integer(i)),
                 Self::TypedValue(TypeContents::String(s)),
-            ) => {
-                if let Ok(i2) = s.parse::<IntegerStorage>() {
-                    i.cmp(&i2).into()
-                } else {
-                    i.to_string().cmp(s).into()
-                }
-            }
+            ) => i.cmp(&string_to_int(s)).into(),
         }
     }
 
@@ -396,5 +397,43 @@ impl From<TruthValue> for Value {
             TruthValue::False => 0.into(),
             TruthValue::Unknown => Self::Null,
         }
+    }
+}
+
+fn string_to_int(string: &str) -> IntegerStorage {
+    let mut result: IntegerStorage = 0;
+    let string = string.trim_start();
+    let mut characters = string.chars().peekable();
+    let sign = match characters.peek() {
+        Some('-') => {
+            let _ = characters.next();
+            true
+        }
+        Some(_) => false,
+        None => return 0,
+    };
+    for character in characters {
+        match character {
+            '0'..='9' => {
+                result = match result.checked_mul(10).and_then(|result| {
+                    result.checked_add(character as IntegerStorage - '0' as IntegerStorage)
+                }) {
+                    Some(result) => result,
+                    None => {
+                        return if sign {
+                            IntegerStorage::MIN
+                        } else {
+                            IntegerStorage::MAX
+                        }
+                    }
+                }
+            }
+            _ => break,
+        }
+    }
+    if sign {
+        !result
+    } else {
+        result
     }
 }

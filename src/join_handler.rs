@@ -11,7 +11,7 @@ use crate::{
     error::{Error, ExecutionError, Result},
     interpreter::{evaluate_expression, resolve_expression, Interpreter},
     resolved_expression::{Expression, ResolvedColumn},
-    storage::ColumnName,
+    storage::{ColumnName, Columns},
     table_handler::{TableHandler, TableIter, TableRow},
     GetData, TableColumns,
 };
@@ -93,7 +93,7 @@ impl<'a> JoinHandlerIter<'a> {
 }
 
 pub enum Join {
-    Table(TableHandler),
+    Table(TableHandler<Columns, String>),
     Join {
         left: Box<Join>,
         right: Box<Join>,
@@ -126,7 +126,9 @@ impl TableColumns for Join {
 impl Join {
     pub fn new(interpreter: &Interpreter, joins: TableJoins) -> Result<Self> {
         Ok(match joins {
-            TableJoins::Table(table_name) => Self::Table(interpreter.open_table(table_name)?),
+            TableJoins::Table(table_name) => {
+                Self::Table(interpreter.open_table(table_name.name, table_name.alias)?)
+            }
             TableJoins::Join {
                 left,
                 right,
@@ -223,7 +225,7 @@ impl Join {
     }
 
     #[auto_enum(Iterator)]
-    fn table_iter(&self) -> impl Iterator<Item = &TableHandler> + '_ {
+    fn table_iter(&self) -> impl Iterator<Item = &TableHandler<Columns, String>> + '_ {
         match self {
             Join::Table(table) => iter::once(table),
             Join::Join { left, right, .. } => {
@@ -364,7 +366,7 @@ impl Join {
 }
 
 enum JoinIterInner<'a> {
-    Table(TableIter, &'a TableHandler),
+    Table(TableIter, &'a TableHandler<Columns, String>),
     Join {
         left: Box<JoinIterInner<'a>>,
         right: Box<JoinIterInner<'a>>,

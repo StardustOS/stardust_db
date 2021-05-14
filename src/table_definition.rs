@@ -9,16 +9,16 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TableDefinition {
-    columns: Columns,
+pub struct TableDefinition<C: AsRef<Columns>> {
+    columns: C,
     not_nulls: Vec<usize>,
     uniques: Vec<(Vec<usize>, String)>,
     primary_key: Option<(Vec<usize>, String)>,
     checks: Vec<(Expression, String)>,
 }
 
-impl TableDefinition {
-    pub fn new_empty(columns: Columns) -> Self {
+impl<C: AsRef<Columns>> TableDefinition<C> {
+    pub fn new_empty(columns: C) -> Self {
         Self {
             columns,
             not_nulls: Vec::new(),
@@ -28,37 +28,19 @@ impl TableDefinition {
         }
     }
 
-    pub fn with_capacity(
-        capacity: usize,
+    pub fn new(
+        columns: C,
+        not_nulls: Vec<usize>,
         uniques: Vec<(Vec<usize>, String)>,
         primary_key: Option<(Vec<usize>, String)>,
     ) -> Self {
         Self {
-            columns: Columns::with_capacity(capacity),
-            not_nulls: Vec::new(),
+            columns,
+            not_nulls,
             uniques,
             primary_key,
             checks: Vec::new(),
         }
-    }
-
-    pub fn add_column(
-        &mut self,
-        name: String,
-        default: Option<Value>,
-        not_null: bool,
-        data_type: Type,
-    ) -> Result<()> {
-        if self.columns.contains_column(&name) {
-            return Err(ExecutionError::ColumnExists(name).into());
-        }
-        let index = self
-            .columns
-            .add_column(name, data_type, default.unwrap_or_default())?;
-        if not_null {
-            self.not_nulls.push(index);
-        }
-        Ok(())
     }
 
     pub fn add_check(&mut self, check: Expression, name: String) {
@@ -66,41 +48,42 @@ impl TableDefinition {
     }
 
     pub fn num_columns(&self) -> usize {
-        self.columns.len()
+        self.columns.as_ref().len()
     }
 
     pub fn columns(&self) -> &Columns {
-        &self.columns
+        self.columns.as_ref()
     }
 
     pub fn column_index(&self, column_name: &str) -> Result<usize> {
         self.columns
+            .as_ref()
             .get_index(column_name)
             .ok_or_else(|| ExecutionError::NoColumn(column_name.to_owned()).into())
     }
 
     pub fn column_name(&self, index: usize) -> Result<&str> {
-        self.columns.column_name(index)
+        self.columns.as_ref().column_name(index)
     }
 
     pub fn get_default<K: ColumnKey>(&self, column_name: K) -> Result<Value> {
-        self.columns.get_default(column_name)
+        self.columns.as_ref().get_default(column_name)
     }
 
     pub fn get_data<K: ColumnKey>(&self, name: K, row: &[u8]) -> Result<Value> {
-        self.columns.get_data(name, row)
+        self.columns.as_ref().get_data(name, row)
     }
 
     pub fn get_data_type(&self, column_name: &str) -> Option<Type> {
-        self.columns.get_data_type(column_name)
+        self.columns.as_ref().get_data_type(column_name)
     }
 
     pub fn column_names(&self) -> impl Iterator<Item = &str> {
-        self.columns.column_names()
+        self.columns.as_ref().column_names()
     }
 
     pub fn contains_column(&self, column: &str) -> bool {
-        self.columns.contains_column(column)
+        self.columns.as_ref().contains_column(column)
     }
 
     pub fn uniques(&self) -> impl Iterator<Item = (&[usize], &str)> {
@@ -122,7 +105,7 @@ impl TableDefinition {
     }
 }
 
-impl TableColumns for (&TableDefinition, &str) {
+impl<C: AsRef<Columns>> TableColumns for (&TableDefinition<C>, &str) {
     fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn> {
         let (definition, this_name) = self;
         let (table, column) = name.destructure();

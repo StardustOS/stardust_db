@@ -1,7 +1,18 @@
-use crate::{Empty, GetData, TableColumns, ast::{
+use crate::{
+    ast::{
         BinaryOp, Column, CreateTable, Delete, DropTable, Insert, Projection, SelectContents,
         SelectQuery, SqlQuery, TableName, UnresolvedExpression, Update, Values,
-    }, data_types::{Type, Value}, error::{Error, ExecutionError, Result}, foreign_key::ForeignKeys, join_handler::JoinHandler, resolved_expression::Expression, storage::Columns, table_definition::TableDefinition, table_handler::{RowBuilder, TableHandler, TableRowUpdater}};
+    },
+    data_types::{Type, Value},
+    error::{Error, ExecutionError, Result},
+    foreign_key::ForeignKeys,
+    join_handler::JoinHandler,
+    resolved_expression::Expression,
+    storage::Columns,
+    table_definition::TableDefinition,
+    table_handler::{RowBuilder, TableHandler, TableRowUpdater},
+    Empty, GetData, TableColumns,
+};
 use itertools::Itertools;
 use once_cell::sync::OnceCell;
 use sled::{open, Db};
@@ -11,9 +22,11 @@ use std::{
     path::Path,
 };
 
+static FOREIGN_KEY_COLUMNS: OnceCell<Columns> = OnceCell::new();
+
 pub struct Interpreter {
     db: Db,
-    foreign_keys: OnceCell<TableHandler>,
+    foreign_keys: OnceCell<TableHandler<&'static Columns, &'static str>>,
 }
 
 impl Interpreter {
@@ -22,15 +35,16 @@ impl Interpreter {
     }
 
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Interpreter> {
+        let db = open(path)?;
         Ok(Interpreter {
-            db: open(path)?,
+            db,
             foreign_keys: OnceCell::new(),
         })
     }
 
-    pub fn execute(&self, query: SqlQuery) -> Result<Relation> {
+    pub fn execute(&self, query: SqlQuery, parameters: &[Value]) -> Result<Relation> {
         let result = match query {
-            SqlQuery::CreateTable(create_table) => self.execute_create_table(create_table),
+            SqlQuery::CreateTable(create_table) => self.execute_create_table(create_table, parameters),
             SqlQuery::Insert(insert) => self.execute_insert(insert),
             SqlQuery::SelectQuery(select) => self.execute_select(select),
             SqlQuery::DropTable(drop_table) => self.execute_drop_table(drop_table),
@@ -41,29 +55,33 @@ impl Interpreter {
         Ok(result)
     }
 
-    pub fn open_table(&self, table_name: TableName) -> Result<TableHandler> {
-        let TableName { name, alias } = table_name;
+    pub fn open_table<N: AsRef<str>>(
+        &self,
+        name: N,
+        alias: Option<N>,
+    ) -> Result<TableHandler<Columns, N>> {
         let directory = self.db.open_tree("@tables")?;
         let columns_bytes = directory
-            .get(name.as_bytes())?
-            .ok_or_else(|| Error::Execution(ExecutionError::NoTable(name.clone())))?;
-        let table_definition: TableDefinition = bincode::deserialize(columns_bytes.as_ref())?;
-        let tree = self.db.open_tree(name.as_bytes())?;
+            .get(name.as_ref().as_bytes())?
+            .ok_or_else(|| Error::Execution(ExecutionError::NoTable(name.as_ref().to_owned())))?;
+        let table_definition: TableDefinition<Columns> =
+            bincode::deserialize(columns_bytes.as_ref())?;
+        let tree = self.db.open_tree(name.as_ref().as_bytes())?;
         Ok(TableHandler::new(tree, table_definition, name, alias))
     }
 
-    pub fn open_internal_table(
+    pub fn open_internal_table<C: AsRef<Columns>>(
         &self,
-        table_name: String,
-        columns: Columns,
-    ) -> Result<TableHandler> {
+        table_name: &'static str,
+        columns: C,
+    ) -> Result<TableHandler<C, &'static str>> {
         let tree = self.db.open_tree(&table_name)?;
         let table_definition = TableDefinition::new_empty(columns);
         Ok(TableHandler::new(tree, table_definition, table_name, None))
     }
 
-    pub fn foreign_keys(&self) -> Result<ForeignKeys> {
-        let handler = self.foreign_keys.get_or_try_init(|| {
+    pub fn foreign_keys(&self) -> Result<ForeignKeys<&'static Columns, &'static str>> {
+        let columns = FOREIGN_KEY_COLUMNS.get_or_try_init::<_, Error>(|| {
             let mut columns = Columns::new();
             columns.add_column("name".to_owned(), Type::String, Value::Null)?;
             columns.add_column("table".to_owned(), Type::String, Value::Null)?;
@@ -72,13 +90,16 @@ impl Interpreter {
             columns.add_column("referred_columns".to_owned(), Type::String, Value::Null)?;
             columns.add_column("on_delete".to_owned(), Type::Integer, Value::Null)?;
             columns.add_column("on_update".to_owned(), Type::Integer, Value::Null)?;
-
-            self.open_internal_table("@foreign_keys".to_owned(), columns)
+            Ok(columns)
         })?;
+        let handler = self
+            .foreign_keys
+            .get_or_try_init(|| self.open_internal_table("@foreign_keys", columns))?;
+
         Ok(ForeignKeys::new(handler))
     }
 
-    fn execute_create_table(&self, create_table: CreateTable) -> Result<Relation> {
+    fn execute_create_table(&self, create_table: CreateTable, _parameters: &[Value]) -> Result<Relation> {
         let CreateTable {
             name,
             columns,
@@ -92,11 +113,32 @@ impl Interpreter {
         if directory.contains_key(table_name.as_bytes())? {
             return Err(Error::Execution(ExecutionError::TableExists(table_name)));
         }
+        let mut columns_definition = Columns::new();
+        let mut not_nulls = Vec::new();
+        for (
+            index,
+            Column {
+                name,
+                data_type,
+                default,
+                not_null,
+            },
+        ) in columns.into_iter().enumerate()
+        {
+            let default = default
+                .map(|d| evaluate_expression(&resolve_expression(d, &Empty)?, &Empty))
+                .transpose()?;
+            columns_definition.add_column(name, data_type, default.unwrap_or_default())?;
+            if not_null {
+                not_nulls.push(index);
+            }
+        }
+
         let mut table_definition =
-            TableDefinition::with_capacity(columns.len(), uniques, primary_key);
+            TableDefinition::new(columns_definition, not_nulls, uniques, primary_key);
 
         for key in foreign_keys {
-            let foreign_table = self.open_table(TableName::new(key.foreign_table.clone(), None))?;
+            let foreign_table = self.open_table(&key.foreign_table, None)?;
             let referred_columns_indexes = key
                 .referred_columns
                 .iter()
@@ -111,15 +153,14 @@ impl Interpreter {
                 let referred_type = foreign_table
                     .get_data_type(referred_column)
                     .ok_or_else(|| ExecutionError::NoColumn(referred_column.clone()))?;
-                let this_column = columns
-                    .iter()
-                    .find(|c| c.name == *this_column)
+                let this_type = table_definition
+                    .get_data_type(this_column.as_str())
                     .ok_or_else(|| ExecutionError::NoColumn(this_column.clone()))?;
-                if referred_type != this_column.data_type {
+                if referred_type != this_type {
                     return Err(ExecutionError::IncorrectForeignKeyReferredColumnType {
-                        this_column_name: this_column.name.clone(),
+                        this_column_name: this_column.clone(),
                         referred_column_name: referred_column.clone(),
-                        this_column_type: this_column.data_type,
+                        this_column_type: this_type,
                         referred_column_type: referred_type,
                     }
                     .into());
@@ -127,18 +168,7 @@ impl Interpreter {
             }
             self.foreign_keys()?.add_key(key, self, &table_name)?;
         }
-        for Column {
-            name,
-            data_type,
-            default,
-            not_null,
-        } in columns.into_iter()
-        {
-            let default = default
-                .map(|d| evaluate_expression(&resolve_expression(d, &Empty)?, &Empty))
-                .transpose()?;
-            table_definition.add_column(name, default, not_null, data_type)?;
-        }
+
         for (check, name) in checks {
             let check = resolve_expression(check, &(&table_definition, table_name.as_str()))?;
             table_definition.add_check(check, name);
@@ -160,7 +190,8 @@ impl Interpreter {
             values,
         } = insert;
         let specified_columns = columns;
-        let table = self.open_table(table)?;
+        let TableName { name, alias } = table;
+        let table = self.open_table(name, alias)?;
         let values = self.execute_select(values)?;
         if let Some(specified_columns) = specified_columns {
             if values.num_columns() != specified_columns.len() {
@@ -268,7 +299,7 @@ impl Interpreter {
             table_name,
             predicate,
         } = delete;
-        let table = self.open_table(TableName::new(table_name, None))?;
+        let table = self.open_table(table_name, None)?;
         let mut iter = table.iter();
         let predicate = predicate
             .map(|p| resolve_expression(p, &table))
@@ -287,7 +318,7 @@ impl Interpreter {
             assignments,
             filter,
         } = update;
-        let table = self.open_table(TableName::new(table_name, None))?;
+        let table = self.open_table(table_name, None)?;
         let mut iter = table.iter();
         let mut assignments = assignments
             .into_iter()
@@ -374,6 +405,10 @@ impl Relation {
         self.column_names.iter().map(|n| n.as_ref())
     }
 
+    pub fn contains_column(&self, column: &str) -> bool {
+        self.column_names.iter().any(|c| column == c)
+    }
+
     pub fn rows(&self) -> impl Iterator<Item = &[Value]> {
         self.rows.iter().map(|r| r.as_slice())
     }
@@ -386,8 +421,25 @@ impl Relation {
         self.column_names.len()
     }
 
+    pub fn num_rows(&self) -> usize {
+        self.rows.len()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty() && self.column_names.is_empty()
+    }
+
+    pub fn get_value(&self, column: usize, row: usize) -> &Value {
+        &self.rows[row][column]
+    }
+
+    pub fn get_value_named(&self, column: &str, row: usize) -> Option<&Value> {
+        let column_index = self
+            .column_names
+            .iter()
+            .find_position(|c| column == c.as_str())
+            .map(|(i, _)| i)?;
+        Some(&self.rows[row][column_index])
     }
 
     pub fn assert_equals(&self, rows: HashSet<Vec<Value>>, column_names: Vec<&str>) {
@@ -457,8 +509,12 @@ where
                         crate::ast::MathematicalOp::Add => (left + right).into(),
                         crate::ast::MathematicalOp::Subtract => (left - right).into(),
                         crate::ast::MathematicalOp::Multiply => (left * right).into(),
-                        crate::ast::MathematicalOp::Divide => left.checked_div(right).map_or(Value::Null, Value::from),
-                        crate::ast::MathematicalOp::Modulus => left.checked_rem(right).map_or(Value::Null, Value::from)
+                        crate::ast::MathematicalOp::Divide => {
+                            left.checked_div(right).map_or(Value::Null, Value::from)
+                        }
+                        crate::ast::MathematicalOp::Modulus => {
+                            left.checked_rem(right).map_or(Value::Null, Value::from)
+                        }
                     };
                     Ok(result)
                 }

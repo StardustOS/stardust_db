@@ -219,7 +219,7 @@ pub enum BinaryOp {
     And,
     Or,
     Comparison(ComparisonOp),
-    Mathematical(MathematicalOp)
+    Mathematical(MathematicalOp),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -238,7 +238,7 @@ pub enum MathematicalOp {
     Subtract,
     Multiply,
     Divide,
-    Modulus
+    Modulus,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -279,11 +279,11 @@ impl std::fmt::Display for MathematicalOp {
                 MathematicalOp::Subtract => "-",
                 MathematicalOp::Multiply => "*",
                 MathematicalOp::Divide => "/",
-                MathematicalOp::Modulus => "%"
+                MathematicalOp::Modulus => "%",
             }
         )
     }
-} 
+}
 
 #[derive(Debug)]
 pub struct SelectContents {

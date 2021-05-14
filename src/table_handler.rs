@@ -8,7 +8,7 @@ use crate::{
     data_types::{Type, Value},
     foreign_key::Action,
     interpreter::{evaluate_expression, Interpreter},
-    storage::{ColumnKey, ColumnName},
+    storage::{ColumnKey, ColumnName, Columns},
     table_definition::TableDefinition,
 };
 use crate::{
@@ -18,19 +18,19 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct TableHandler {
+pub struct TableHandler<C: AsRef<Columns>, N: AsRef<str>> {
     tree: Tree,
-    table_definition: TableDefinition,
-    table_name: String,
-    alias: Option<String>,
+    table_definition: TableDefinition<C>,
+    table_name: N,
+    alias: Option<N>,
 }
 
-impl TableHandler {
+impl<C: AsRef<Columns>, N: AsRef<str>> TableHandler<C, N> {
     pub fn new(
         tree: Tree,
-        table_definition: TableDefinition,
-        table_name: String,
-        alias: Option<String>,
+        table_definition: TableDefinition<C>,
+        table_name: N,
+        alias: Option<N>,
     ) -> Self {
         Self {
             tree,
@@ -135,7 +135,7 @@ impl TableHandler {
 
     pub fn contains_unique(&self, column_set: Vec<usize>) -> bool {
         for set in column_set.into_iter().powerset() {
-            if self.uniques().find(|(s, _)| *s == set).is_some() {
+            if self.uniques().any(|(s, _)| *s == set) {
                 return true;
             }
         }
@@ -198,13 +198,14 @@ impl TableHandler {
     }
 
     pub fn unaliased_table_name(&self) -> &str {
-        self.table_name.as_str()
+        self.table_name.as_ref()
     }
 
     pub fn aliased_table_name(&self) -> &str {
         self.alias
-            .as_deref()
-            .unwrap_or_else(|| self.table_name.as_str())
+            .as_ref()
+            .map(|s| s.as_ref())
+            .unwrap_or_else(|| self.table_name.as_ref())
     }
 
     fn generate_next_index(&self) -> Result<[u8; 8]> {
@@ -243,23 +244,10 @@ impl TableIter {
             .map(|(left, right)| TableRow::new(left, right)))
     }
 
-    pub fn old_filter(
-        &mut self,
-        predicate: &Expression,
-        handler: &TableHandler,
-    ) -> Result<Option<TableRow>> {
-        while let Some(next) = self.get_next()? {
-            if evaluate_expression(predicate, &(handler, &next))?.is_true() {
-                return Ok(Some(next));
-            }
-        }
-        Ok(None)
-    }
-
-    pub fn filter_where<'a>(
+    pub fn filter_where<'a, C: AsRef<Columns>, N: AsRef<str>>(
         &'a mut self,
         predicate: &'a Expression,
-        handler: &'a TableHandler,
+        handler: &'a TableHandler<C, N>,
     ) -> impl Iterator<Item = Result<TableRow>> + 'a {
         self.filter(move |r| {
             if let Ok(row) = r {
@@ -316,14 +304,14 @@ impl PartialEq for &TableRow {
     }
 }
 
-pub struct TableRowUpdater<'a> {
+pub struct TableRowUpdater<'a, C: AsRef<Columns>, N: AsRef<str>> {
     row: &'a TableRow,
-    handler: &'a TableHandler,
+    handler: &'a TableHandler<C, N>,
     new_row: Vec<Value>,
 }
 
-impl<'a> TableRowUpdater<'a> {
-    pub fn new(row: &'a TableRow, handler: &'a TableHandler) -> Self {
+impl<'a, C: AsRef<Columns>, N: AsRef<str>> TableRowUpdater<'a, C, N> {
+    pub fn new(row: &'a TableRow, handler: &'a TableHandler<C, N>) -> Self {
         let new_row = Vec::with_capacity(handler.num_columns());
         Self {
             row,
@@ -349,14 +337,20 @@ impl<'a> TableRowUpdater<'a> {
     }
 }
 
-pub struct RowBuilder<'a> {
-    handler: &'a TableHandler,
+pub struct RowBuilder<'a, C: AsRef<Columns>, N: AsRef<str>> {
+    handler: &'a TableHandler<C, N>,
     new_row: Vec<Value>,
-    inserted: HashSet<usize>
+    inserted: HashSet<usize>,
 }
 
-impl<'a> RowBuilder<'a> {
-    pub fn new(handler: &'a TableHandler) -> Self { Self { handler, new_row: vec![Value::Null; handler.num_columns()], inserted: HashSet::new() } }
+impl<'a, C: AsRef<Columns>, N: AsRef<str>> RowBuilder<'a, C, N> {
+    pub fn new(handler: &'a TableHandler<C, N>) -> Self {
+        Self {
+            handler,
+            new_row: vec![Value::Null; handler.num_columns()],
+            inserted: HashSet::new(),
+        }
+    }
 
     pub fn insert(&mut self, column: &str, value: Value) -> Result<()> {
         let index = self.handler.column_index(column)?;
@@ -367,16 +361,16 @@ impl<'a> RowBuilder<'a> {
 
     pub fn finalise(self) -> Result<Vec<Value>> {
         let mut new_row = self.new_row;
-        for i in 0..self.handler.num_columns() {
+        for (i, value) in new_row.iter_mut().enumerate() {
             if !self.inserted.contains(&i) {
-                new_row[i] = self.handler.get_default(i)?;
+                *value = self.handler.get_default(i)?;
             }
         }
         Ok(new_row)
     }
 }
 
-impl TableColumns for TableHandler {
+impl<C: AsRef<Columns>, N: AsRef<str>> TableColumns for TableHandler<C, N> {
     fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn> {
         let this_name = self.aliased_table_name();
         let (table_name, column_name) = name.destructure();
@@ -391,7 +385,7 @@ impl TableColumns for TableHandler {
     }
 }
 
-impl<'a> GetData for (&'a TableHandler, &'a TableRow) {
+impl<'a, C: AsRef<Columns>, N: AsRef<str>> GetData for (&'a TableHandler<C, N>, &'a TableRow) {
     fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value> {
         let (handler, row) = self;
         if row.left.is_empty() && row.right.is_empty() {
@@ -411,7 +405,7 @@ impl<'a> GetData for (&'a TableHandler, &'a TableRow) {
     }
 }
 
-impl GetData for (&TableHandler, &[Value]) {
+impl<C: AsRef<Columns>, N: AsRef<str>> GetData for (&TableHandler<C, N>, &[Value]) {
     fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value> {
         let (handler, row) = self;
         let index = handler

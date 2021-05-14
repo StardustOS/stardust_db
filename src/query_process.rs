@@ -1,3 +1,5 @@
+use std::ops::AddAssign;
+
 use crate::{
     ast::*,
     data_types::{Type, TypeContents},
@@ -106,7 +108,7 @@ fn parse_create_table(
     _location: Option<String>,
     _query: Option<Box<Query>>,
     _without_rowid: bool,
-    _like: Option<ObjectName>,
+    _like: Option<ObjectName>
 ) -> Result<CreateTable> {
     let table_name = name.to_string();
     let mut uniques = Vec::new();
@@ -588,4 +590,16 @@ fn parse_update(name: ObjectName, assignments: Vec<Assignment>, selection: Optio
         .collect();
     let filter = selection.map(parse_expression);
     Update::new(table_name, assignments, filter)
+}
+
+trait ParameterCount : AddAssign<u16> {
+    fn get_next(&mut self) -> Self;
+}
+
+impl ParameterCount for u16 {
+    fn get_next(&mut self) -> Self {
+        let next = *self;
+        *self += 1;
+        next
+    }
 }
