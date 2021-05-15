@@ -456,6 +456,27 @@ impl Relation {
     pub fn ordered_equals(&self, rows: Vec<Vec<Value>>, column_names: Vec<&str>) -> bool {
         self.rows == rows && self.column_names == column_names
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = Row<'_>> {
+        self.rows.iter().map(move |row| Row::new(self.column_names.as_slice(), row.as_slice()))
+    }
+}
+
+pub struct Row<'a> {
+    columns: &'a [String],
+    row: &'a [Value]
+}
+
+impl<'a> Row<'a> {
+    pub fn new(columns: &'a [String], row: &'a [Value]) -> Self { Self { columns, row } }
+
+    pub fn get_value_index(&self, index: usize) -> Option<&Value> {
+        self.row.get(index)
+    }
+
+    pub fn get_value_named(&self, column_name: &str) -> Option<&Value> {
+        self.columns.iter().position(|name| name.as_str() == column_name).map(|index| &self.row[index])
+    }
 }
 
 impl Display for Relation {
