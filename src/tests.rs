@@ -385,6 +385,18 @@ fn insert_default_values() {
 }
 
 #[test]
+fn insert_default_values_no_default() {
+    let db = temp_db();
+    let _ = db
+        .execute_query("CREATE TABLE test (name string, age int);")
+        .unwrap();
+    let result = db.execute_query("INSERT INTO test (age) VALUES (25);");
+    assert!(
+        matches!(result, Err(Error::Execution(ExecutionError::NoDefaultValue(err))) if err == "name")
+    )
+}
+
+#[test]
 fn insert_check_valid() {
     let db = temp_db();
     let _ = db

@@ -13,8 +13,6 @@ pub enum Error {
     Execution(#[from] ExecutionError),
     #[error("Serialization error: {0}")]
     Serialization(#[from] bincode::Error),
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -49,6 +47,8 @@ pub enum ExecutionError {
     CheckConstraintFailed(String),
     #[error("FOREIGN KEY constraint `{0}` failed")]
     ForeignKeyConstraintFailed(String),
+    #[error("No DEFAULT value for column `{0}`")]
+    NoDefaultValue(String),
     #[error("multiple primary keys for table `{0}`")]
     MultiplePrimaryKey(String),
     #[error("missing constraint for join")]

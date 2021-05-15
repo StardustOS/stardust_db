@@ -51,16 +51,14 @@ pub struct ColumnEntry {
     t: Type,
     position: usize,
     null_index: usize,
-    default: Value,
 }
 
 impl ColumnEntry {
-    pub fn new(t: Type, position: usize, null_index: usize, default: Value) -> Self {
+    pub fn new(t: Type, position: usize, null_index: usize) -> Self {
         Self {
             t,
             position,
             null_index,
-            default,
         }
     }
 
@@ -79,10 +77,6 @@ impl ColumnEntry {
     pub fn bitmask_index(&self) -> (usize, usize) {
         (self.null_index / 8, self.null_index % 8)
     }
-
-    pub fn default_value(&self) -> Value {
-        self.default.clone()
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -98,10 +92,10 @@ impl Columns {
         Default::default()
     }
 
-    pub fn from_column(name: String, t: Type, default: Value) -> Self {
+    pub fn from_column(name: String, t: Type) -> Self {
         let mut columns = Self::with_capacity(1);
         columns
-            .add_column(name, t, default)
+            .add_column(name, t)
             .expect("No columns so this can't fail");
         columns
     }
@@ -150,9 +144,9 @@ impl Columns {
         self.columns.get(column).map(|c| c.get_type())
     }
 
-    pub fn get_default<K: ColumnKey>(&self, column: K) -> Result<Value> {
+    /*pub fn get_default<K: ColumnKey>(&self, column: K) -> Result<Value> {
         column.get_entry(&self.columns).map(|e| e.default_value())
-    }
+    }*/
 
     pub fn column_name(&self, index: usize) -> Result<&str> {
         self.columns
@@ -161,18 +155,18 @@ impl Columns {
             .ok_or_else(|| Error::Internal(format!("No column with index {}", index)))
     }
 
-    pub fn add_column(&mut self, name: String, t: Type, default: Value) -> Result<usize> {
+    pub fn add_column(&mut self, name: String, t: Type) -> Result<usize> {
         if self.contains_column(&name) {
             return Err(ExecutionError::ColumnExists(name).into());
         }
         let index = self.columns.len();
         if let Some(s) = t.size() {
-            let entry = ColumnEntry::new(t, self.sized_len, self.sized_count, default);
+            let entry = ColumnEntry::new(t, self.sized_len, self.sized_count);
             self.columns.insert(name, entry);
             self.sized_len += s;
             self.sized_count += 1;
         } else {
-            let entry = ColumnEntry::new(t, self.unsized_count * size_of::<u16>(), 0, default);
+            let entry = ColumnEntry::new(t, self.unsized_count * size_of::<u16>(), 0);
             self.columns.insert(name, entry);
             self.unsized_count += 1;
         }
@@ -283,10 +277,4 @@ fn get_unsized_data(dictionary_position: usize, end_position: usize, row: &[u8])
     let data_position =
         u16::from_be_bytes(row[dictionary_position..next_start].try_into().unwrap()) as usize;
     &row[data_position..end]
-}
-
-impl AsRef<Columns> for Columns {
-    fn as_ref(&self) -> &Columns {
-        self
-    }
 }

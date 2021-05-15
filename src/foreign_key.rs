@@ -1,4 +1,4 @@
-use std::convert::TryInto;
+use std::{borrow::Borrow, convert::TryInto};
 
 use co_sort::{co_sort, Permutation};
 
@@ -12,11 +12,11 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct ForeignKeys<'a, C: AsRef<Columns>, N: AsRef<str>> {
+pub struct ForeignKeys<'a, C: Borrow<Columns>, N: AsRef<str>> {
     handler: &'a TableHandler<C, N>,
 }
 
-impl<'a, C: AsRef<Columns>, N: AsRef<str>> ForeignKeys<'a, C, N> {
+impl<'a, C: Borrow<Columns>, N: AsRef<str>> ForeignKeys<'a, C, N> {
     pub fn new(handler: &'a TableHandler<C, N>) -> Self {
         Self { handler }
     }
@@ -254,7 +254,7 @@ impl ParentKeyChecker {
         }
     }
 
-    pub fn check_parent_rows<H: AsRef<Columns>, N: AsRef<str>>(
+    pub fn check_parent_rows<H: Borrow<Columns>, N: AsRef<str>>(
         self,
         this_row: &TableRow,
         handler: &TableHandler<H, N>,

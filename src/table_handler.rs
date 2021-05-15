@@ -1,4 +1,4 @@
-use std::{collections::HashSet, convert::TryInto, mem::size_of};
+use std::{borrow::Borrow, collections::HashSet, convert::TryInto, mem::size_of};
 
 use auto_enums::auto_enum;
 use itertools::Itertools;
@@ -18,14 +18,14 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct TableHandler<C: AsRef<Columns>, N: AsRef<str>> {
+pub struct TableHandler<C: Borrow<Columns>, N: AsRef<str>> {
     tree: Tree,
     table_definition: TableDefinition<C>,
     table_name: N,
     alias: Option<N>,
 }
 
-impl<C: AsRef<Columns>, N: AsRef<str>> TableHandler<C, N> {
+impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
     pub fn new(
         tree: Tree,
         table_definition: TableDefinition<C>,
@@ -193,8 +193,8 @@ impl<C: AsRef<Columns>, N: AsRef<str>> TableHandler<C, N> {
         self.table_definition.num_columns()
     }
 
-    pub fn get_default<K: ColumnKey>(&self, column_name: K) -> Result<Value> {
-        self.table_definition.get_default(column_name)
+    pub fn get_default(&self, column: usize) -> Result<Value> {
+        self.table_definition.get_default(column)
     }
 
     pub fn unaliased_table_name(&self) -> &str {
@@ -244,7 +244,7 @@ impl TableIter {
             .map(|(left, right)| TableRow::new(left, right)))
     }
 
-    pub fn filter_where<'a, C: AsRef<Columns>, N: AsRef<str>>(
+    pub fn filter_where<'a, C: Borrow<Columns>, N: AsRef<str>>(
         &'a mut self,
         predicate: &'a Expression,
         handler: &'a TableHandler<C, N>,
@@ -304,13 +304,13 @@ impl PartialEq for &TableRow {
     }
 }
 
-pub struct TableRowUpdater<'a, C: AsRef<Columns>, N: AsRef<str>> {
+pub struct TableRowUpdater<'a, C: Borrow<Columns>, N: AsRef<str>> {
     row: &'a TableRow,
     handler: &'a TableHandler<C, N>,
     new_row: Vec<Value>,
 }
 
-impl<'a, C: AsRef<Columns>, N: AsRef<str>> TableRowUpdater<'a, C, N> {
+impl<'a, C: Borrow<Columns>, N: AsRef<str>> TableRowUpdater<'a, C, N> {
     pub fn new(row: &'a TableRow, handler: &'a TableHandler<C, N>) -> Self {
         let new_row = Vec::with_capacity(handler.num_columns());
         Self {
@@ -337,13 +337,13 @@ impl<'a, C: AsRef<Columns>, N: AsRef<str>> TableRowUpdater<'a, C, N> {
     }
 }
 
-pub struct RowBuilder<'a, C: AsRef<Columns>, N: AsRef<str>> {
+pub struct RowBuilder<'a, C: Borrow<Columns>, N: AsRef<str>> {
     handler: &'a TableHandler<C, N>,
     new_row: Vec<Value>,
     inserted: HashSet<usize>,
 }
 
-impl<'a, C: AsRef<Columns>, N: AsRef<str>> RowBuilder<'a, C, N> {
+impl<'a, C: Borrow<Columns>, N: AsRef<str>> RowBuilder<'a, C, N> {
     pub fn new(handler: &'a TableHandler<C, N>) -> Self {
         Self {
             handler,
@@ -370,7 +370,7 @@ impl<'a, C: AsRef<Columns>, N: AsRef<str>> RowBuilder<'a, C, N> {
     }
 }
 
-impl<C: AsRef<Columns>, N: AsRef<str>> TableColumns for TableHandler<C, N> {
+impl<C: Borrow<Columns>, N: AsRef<str>> TableColumns for TableHandler<C, N> {
     fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn> {
         let this_name = self.aliased_table_name();
         let (table_name, column_name) = name.destructure();
@@ -385,7 +385,7 @@ impl<C: AsRef<Columns>, N: AsRef<str>> TableColumns for TableHandler<C, N> {
     }
 }
 
-impl<'a, C: AsRef<Columns>, N: AsRef<str>> GetData for (&'a TableHandler<C, N>, &'a TableRow) {
+impl<'a, C: Borrow<Columns>, N: AsRef<str>> GetData for (&'a TableHandler<C, N>, &'a TableRow) {
     fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value> {
         let (handler, row) = self;
         if row.left.is_empty() && row.right.is_empty() {
@@ -405,7 +405,7 @@ impl<'a, C: AsRef<Columns>, N: AsRef<str>> GetData for (&'a TableHandler<C, N>, 
     }
 }
 
-impl<C: AsRef<Columns>, N: AsRef<str>> GetData for (&TableHandler<C, N>, &[Value]) {
+impl<C: Borrow<Columns>, N: AsRef<str>> GetData for (&TableHandler<C, N>, &[Value]) {
     fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value> {
         let (handler, row) = self;
         let index = handler

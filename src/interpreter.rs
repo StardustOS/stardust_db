@@ -16,11 +16,7 @@ use crate::{
 use itertools::Itertools;
 use once_cell::sync::OnceCell;
 use sled::{open, Db};
-use std::{
-    collections::HashSet,
-    fmt::{Display, Formatter},
-    path::Path,
-};
+use std::{borrow::Borrow, collections::{HashMap, HashSet}, fmt::{Display, Formatter}, path::Path};
 
 static FOREIGN_KEY_COLUMNS: OnceCell<Columns> = OnceCell::new();
 
@@ -70,7 +66,7 @@ impl Interpreter {
         Ok(TableHandler::new(tree, table_definition, name, alias))
     }
 
-    pub fn open_internal_table<C: AsRef<Columns>>(
+    pub fn open_internal_table<C: Borrow<Columns>>(
         &self,
         table_name: &'static str,
         columns: C,
@@ -83,13 +79,13 @@ impl Interpreter {
     pub fn foreign_keys(&self) -> Result<ForeignKeys<&'static Columns, &'static str>> {
         let columns = FOREIGN_KEY_COLUMNS.get_or_try_init::<_, Error>(|| {
             let mut columns = Columns::new();
-            columns.add_column("name".to_owned(), Type::String, Value::Null)?;
-            columns.add_column("table".to_owned(), Type::String, Value::Null)?;
-            columns.add_column("columns".to_owned(), Type::String, Value::Null)?;
-            columns.add_column("referred_table".to_owned(), Type::String, Value::Null)?;
-            columns.add_column("referred_columns".to_owned(), Type::String, Value::Null)?;
-            columns.add_column("on_delete".to_owned(), Type::Integer, Value::Null)?;
-            columns.add_column("on_update".to_owned(), Type::Integer, Value::Null)?;
+            columns.add_column("name".to_owned(), Type::String)?;
+            columns.add_column("table".to_owned(), Type::String)?;
+            columns.add_column("columns".to_owned(), Type::String)?;
+            columns.add_column("referred_table".to_owned(), Type::String)?;
+            columns.add_column("referred_columns".to_owned(), Type::String)?;
+            columns.add_column("on_delete".to_owned(), Type::Integer)?;
+            columns.add_column("on_update".to_owned(), Type::Integer)?;
             Ok(columns)
         })?;
         let handler = self
@@ -115,6 +111,7 @@ impl Interpreter {
         }
         let mut columns_definition = Columns::new();
         let mut not_nulls = Vec::new();
+        let mut defaults = HashMap::new();
         for (
             index,
             Column {
@@ -128,14 +125,17 @@ impl Interpreter {
             let default = default
                 .map(|d| evaluate_expression(&resolve_expression(d, &Empty)?, &Empty))
                 .transpose()?;
-            columns_definition.add_column(name, data_type, default.unwrap_or_default())?;
+            if let Some(default) = default {
+                defaults.insert(index, default);
+            }
+            columns_definition.add_column(name, data_type)?;
             if not_null {
                 not_nulls.push(index);
             }
         }
 
         let mut table_definition =
-            TableDefinition::new(columns_definition, not_nulls, uniques, primary_key);
+            TableDefinition::new(columns_definition, not_nulls, uniques, primary_key, defaults);
 
         for key in foreign_keys {
             let foreign_table = self.open_table(&key.foreign_table, None)?;
