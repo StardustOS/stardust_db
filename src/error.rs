@@ -47,8 +47,6 @@ pub enum ExecutionError {
     CheckConstraintFailed(String),
     #[error("FOREIGN KEY constraint `{0}` failed")]
     ForeignKeyConstraintFailed(String),
-    #[error("No DEFAULT value for column `{0}`")]
-    NoDefaultValue(String),
     #[error("multiple primary keys for table `{0}`")]
     MultiplePrimaryKey(String),
     #[error("missing constraint for join")]

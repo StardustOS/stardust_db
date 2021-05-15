@@ -92,14 +92,6 @@ impl Columns {
         Default::default()
     }
 
-    pub fn from_column(name: String, t: Type) -> Self {
-        let mut columns = Self::with_capacity(1);
-        columns
-            .add_column(name, t)
-            .expect("No columns so this can't fail");
-        columns
-    }
-
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             columns: IndexMap::with_capacity(capacity),
@@ -143,10 +135,6 @@ impl Columns {
     pub fn get_data_type(&self, column: &str) -> Option<Type> {
         self.columns.get(column).map(|c| c.get_type())
     }
-
-    /*pub fn get_default<K: ColumnKey>(&self, column: K) -> Result<Value> {
-        column.get_entry(&self.columns).map(|e| e.default_value())
-    }*/
 
     pub fn column_name(&self, index: usize) -> Result<&str> {
         self.columns

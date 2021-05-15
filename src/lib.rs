@@ -67,7 +67,11 @@ impl Database {
         self.execute_query_inner(sql, &[])
     }
 
-    pub fn execute_parameterised_query(&self, sql: &str, parameters: Vec<Value>) -> Result<Vec<Relation>> {
+    pub fn execute_parameterised_query(
+        &self,
+        sql: &str,
+        parameters: Vec<Value>,
+    ) -> Result<Vec<Relation>> {
         self.execute_query_inner(sql, &parameters)
     }
 

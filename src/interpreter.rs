@@ -16,7 +16,12 @@ use crate::{
 use itertools::Itertools;
 use once_cell::sync::OnceCell;
 use sled::{open, Db};
-use std::{borrow::Borrow, collections::{HashMap, HashSet}, fmt::{Display, Formatter}, path::Path};
+use std::{
+    borrow::Borrow,
+    collections::{HashMap, HashSet},
+    fmt::{Display, Formatter},
+    path::Path,
+};
 
 static FOREIGN_KEY_COLUMNS: OnceCell<Columns> = OnceCell::new();
 
@@ -40,7 +45,9 @@ impl Interpreter {
 
     pub fn execute(&self, query: SqlQuery, parameters: &[Value]) -> Result<Relation> {
         let result = match query {
-            SqlQuery::CreateTable(create_table) => self.execute_create_table(create_table, parameters),
+            SqlQuery::CreateTable(create_table) => {
+                self.execute_create_table(create_table, parameters)
+            }
             SqlQuery::Insert(insert) => self.execute_insert(insert),
             SqlQuery::SelectQuery(select) => self.execute_select(select),
             SqlQuery::DropTable(drop_table) => self.execute_drop_table(drop_table),
@@ -95,7 +102,11 @@ impl Interpreter {
         Ok(ForeignKeys::new(handler))
     }
 
-    fn execute_create_table(&self, create_table: CreateTable, _parameters: &[Value]) -> Result<Relation> {
+    fn execute_create_table(
+        &self,
+        create_table: CreateTable,
+        _parameters: &[Value],
+    ) -> Result<Relation> {
         let CreateTable {
             name,
             columns,
@@ -134,8 +145,13 @@ impl Interpreter {
             }
         }
 
-        let mut table_definition =
-            TableDefinition::new(columns_definition, not_nulls, uniques, primary_key, defaults);
+        let mut table_definition = TableDefinition::new(
+            columns_definition,
+            not_nulls,
+            uniques,
+            primary_key,
+            defaults,
+        );
 
         for key in foreign_keys {
             let foreign_table = self.open_table(&key.foreign_table, None)?;
@@ -458,24 +474,31 @@ impl Relation {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Row<'_>> {
-        self.rows.iter().map(move |row| Row::new(self.column_names.as_slice(), row.as_slice()))
+        self.rows
+            .iter()
+            .map(move |row| Row::new(self.column_names.as_slice(), row.as_slice()))
     }
 }
 
 pub struct Row<'a> {
     columns: &'a [String],
-    row: &'a [Value]
+    row: &'a [Value],
 }
 
 impl<'a> Row<'a> {
-    pub fn new(columns: &'a [String], row: &'a [Value]) -> Self { Self { columns, row } }
+    pub fn new(columns: &'a [String], row: &'a [Value]) -> Self {
+        Self { columns, row }
+    }
 
     pub fn get_value_index(&self, index: usize) -> Option<&Value> {
         self.row.get(index)
     }
 
     pub fn get_value_named(&self, column_name: &str) -> Option<&Value> {
-        self.columns.iter().position(|name| name.as_str() == column_name).map(|index| &self.row[index])
+        self.columns
+            .iter()
+            .position(|name| name.as_str() == column_name)
+            .map(|index| &self.row[index])
     }
 }
 

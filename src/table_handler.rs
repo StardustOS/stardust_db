@@ -193,7 +193,7 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
         self.table_definition.num_columns()
     }
 
-    pub fn get_default(&self, column: usize) -> Result<Value> {
+    pub fn get_default(&self, column: usize) -> Value {
         self.table_definition.get_default(column)
     }
 
@@ -363,7 +363,7 @@ impl<'a, C: Borrow<Columns>, N: AsRef<str>> RowBuilder<'a, C, N> {
         let mut new_row = self.new_row;
         for (i, value) in new_row.iter_mut().enumerate() {
             if !self.inserted.contains(&i) {
-                *value = self.handler.get_default(i)?;
+                *value = self.handler.get_default(i);
             }
         }
         Ok(new_row)

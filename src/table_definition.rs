@@ -2,7 +2,13 @@ use std::{borrow::Borrow, collections::HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{TableColumns, data_types::{Type, Value}, error::{ExecutionError, Result}, resolved_expression::{Expression, ResolvedColumn}, storage::{ColumnKey, ColumnName, Columns}};
+use crate::{
+    data_types::{Type, Value},
+    error::{ExecutionError, Result},
+    resolved_expression::{Expression, ResolvedColumn},
+    storage::{ColumnKey, ColumnName, Columns},
+    TableColumns,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableDefinition<C: Borrow<Columns>> {
@@ -11,7 +17,7 @@ pub struct TableDefinition<C: Borrow<Columns>> {
     uniques: Vec<(Vec<usize>, String)>,
     primary_key: Option<(Vec<usize>, String)>,
     checks: Vec<(Expression, String)>,
-    defaults: HashMap<usize, Value>
+    defaults: HashMap<usize, Value>,
 }
 
 impl<C: Borrow<Columns>> TableDefinition<C> {
@@ -22,7 +28,7 @@ impl<C: Borrow<Columns>> TableDefinition<C> {
             uniques: Vec::new(),
             primary_key: None,
             checks: Vec::new(),
-            defaults: HashMap::new()
+            defaults: HashMap::new(),
         }
     }
 
@@ -31,7 +37,7 @@ impl<C: Borrow<Columns>> TableDefinition<C> {
         not_nulls: Vec<usize>,
         uniques: Vec<(Vec<usize>, String)>,
         primary_key: Option<(Vec<usize>, String)>,
-        defaults: HashMap<usize, Value>
+        defaults: HashMap<usize, Value>,
     ) -> Self {
         Self {
             columns,
@@ -39,7 +45,7 @@ impl<C: Borrow<Columns>> TableDefinition<C> {
             uniques,
             primary_key,
             checks: Vec::new(),
-            defaults
+            defaults,
         }
     }
 
@@ -66,11 +72,8 @@ impl<C: Borrow<Columns>> TableDefinition<C> {
         self.columns.borrow().column_name(index)
     }
 
-    pub fn get_default(&self, column: usize) -> Result<Value> {
-        self.defaults.get(&column).cloned().ok_or_else(|| match self.columns.borrow().column_name(column) {
-            Ok(name) => ExecutionError::NoDefaultValue(name.to_owned()).into(),
-            Err(e) => e
-        })
+    pub fn get_default(&self, column: usize) -> Value {
+        self.defaults.get(&column).cloned().unwrap_or_default()
     }
 
     pub fn get_data<K: ColumnKey>(&self, name: K, row: &[u8]) -> Result<Value> {

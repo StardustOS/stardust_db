@@ -286,7 +286,7 @@ impl ParentKeyChecker {
                         match foreign_key_action {
                             ForeignKeyAction::SetNull => new_row.add_update(parent, Value::Null)?,
                             ForeignKeyAction::SetDefault => {
-                                let default = self.parent_handler.get_default(parent)?;
+                                let default = self.parent_handler.get_default(parent);
                                 new_row.add_update(parent, default)?;
                             }
                             _ => unreachable!(),

@@ -390,9 +390,26 @@ fn insert_default_values_no_default() {
     let _ = db
         .execute_query("CREATE TABLE test (name string, age int);")
         .unwrap();
+    let _ = db
+        .execute_query("INSERT INTO test (age) VALUES (25);")
+        .unwrap();
+    let result = db.execute_query("SELECT * FROM test;").unwrap();
+    assert_eq!(result.len(), 1);
+    result[0].assert_equals(
+        set![vec![Value::Null, Value::from(25)]],
+        vec!["name", "age"],
+    )
+}
+
+#[test]
+fn insert_default_values_no_default_not_null() {
+    let db = temp_db();
+    let _ = db
+        .execute_query("CREATE TABLE test (name string NOT NULL, age int);")
+        .unwrap();
     let result = db.execute_query("INSERT INTO test (age) VALUES (25);");
     assert!(
-        matches!(result, Err(Error::Execution(ExecutionError::NoDefaultValue(err))) if err == "name")
+        matches!(dbg!(result), Err(Error::Execution(ExecutionError::NullConstraintFailed(column))) if column == "name")
     )
 }
 
