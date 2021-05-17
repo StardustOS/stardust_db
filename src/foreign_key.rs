@@ -131,24 +131,28 @@ impl<'a, C: Borrow<Columns>, N: AsRef<str>> ForeignKeys<'a, C, N> {
         self.handler.iter().filter_map(move |row| {
             (|| {
                 let row = row?;
-                let child_table = self.handler.get_value("referred_table", &row)?;
-                if child_table.assume_string()? == table {
+                let child_table = self
+                    .handler
+                    .get_value("referred_table", &row)?
+                    .assume_string()?;
+                if child_table == table {
                     let foreign_key_name = self.handler.get_value("name", &row)?.assume_string()?;
                     let parent_table = self.handler.get_value("table", &row)?.assume_string()?;
+                    let parent_handler = interpreter.open_table(parent_table, None)?;
                     let mut parent_columns: Vec<usize> = self
                         .handler
                         .get_value("columns", &row)?
                         .assume_string()?
                         .split('|')
-                        .map(|c| self.handler.column_index(c))
+                        .map(|c| parent_handler.column_index(c))
                         .collect::<Result<_>>()?;
-                    let parent_handler = interpreter.open_table(parent_table, None)?;
+                    let child_handler = interpreter.open_table(child_table, None)?;
                     let mut child_columns: Vec<usize> = self
                         .handler
                         .get_value("referred_columns", &row)?
                         .assume_string()?
                         .split('|')
-                        .map(|column_name| parent_handler.column_index(column_name))
+                        .map(|column_name| child_handler.column_index(column_name))
                         .collect::<Result<_>>()?;
 
                     co_sort!(parent_columns, child_columns);
@@ -256,21 +260,33 @@ impl ParentKeyChecker {
 
     pub fn check_parent_rows<H: Borrow<Columns>, N: AsRef<str>>(
         self,
-        this_row: &TableRow,
+        old_row: &TableRow,
         handler: &TableHandler<H, N>,
         action: Action,
         interpreter: &Interpreter,
     ) -> Result<()> {
         let foreign_key_action = match &action {
             Action::Delete => self.on_delete,
-            Action::Update(_) => self.on_update,
+            Action::Update(new_row) => {
+                let mut equal = true;
+                for &i in &self.child_columns {
+                    if handler.get_value(i, old_row)? != new_row[i] {
+                        equal = false;
+                        break;
+                    }
+                }
+                if equal {
+                    return Ok(());
+                }
+                self.on_update
+            }
         };
         'row: for parent_row in self.parent_handler.iter() {
             let parent_row = parent_row?;
             for (child, parent) in self.child_columns.iter().zip(self.parent_columns.iter()) {
                 let foreign_value = self.parent_handler.get_value(*parent, &parent_row)?;
                 if !handler
-                    .get_value(*child, this_row)?
+                    .get_value(*child, old_row)?
                     .equals_or_null(&foreign_value)
                 {
                     continue 'row;
@@ -298,16 +314,17 @@ impl ParentKeyChecker {
                 }
                 ForeignKeyAction::Cascade => match action {
                     Action::Delete => self.parent_handler.delete_row(&parent_row, interpreter)?,
-                    Action::Update(updated_row) => {
-                        let mut new_row = TableRowUpdater::new(&parent_row, &self.parent_handler);
+                    Action::Update(new_row) => {
+                        let mut updated_row =
+                            TableRowUpdater::new(&parent_row, &self.parent_handler);
                         for (&parent, &child) in
                             self.parent_columns.iter().zip(self.child_columns.iter())
                         {
-                            new_row.add_update(parent, updated_row[child].clone())?;
+                            updated_row.add_update(parent, new_row[child].clone())?;
                         }
-                        let new_row = new_row.finalise()?;
+                        let updated_row = updated_row.finalise()?;
                         self.parent_handler
-                            .update_row(parent_row, interpreter, new_row)?;
+                            .update_row(parent_row, interpreter, updated_row)?;
                     }
                 },
             }

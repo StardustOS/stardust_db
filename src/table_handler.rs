@@ -1,14 +1,15 @@
-use std::{borrow::Borrow, collections::HashSet, convert::TryInto, mem::size_of};
+use std::{borrow::Borrow, collections::HashSet, convert::TryInto, mem::size_of, ops::Deref};
 
 use auto_enums::auto_enum;
 use itertools::Itertools;
 use sled::{IVec, Tree};
 
 use crate::{
+    ast::ColumnName,
     data_types::{Type, Value},
     foreign_key::Action,
     interpreter::{evaluate_expression, Interpreter},
-    storage::{ColumnKey, ColumnName, Columns},
+    storage::{ColumnKey, Columns},
     table_definition::TableDefinition,
 };
 use crate::{
@@ -86,7 +87,7 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
         interpreter: &Interpreter,
         new_row: Vec<Value>,
     ) -> Result<()> {
-        self.check_row(&new_row, interpreter)?;
+        self.check_row(&new_row, interpreter, Some(&row))?;
         for key in interpreter
             .foreign_keys()?
             .parent_foreign_keys(self.unaliased_table_name(), interpreter)
@@ -103,7 +104,7 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
     }
 
     pub fn insert_values(&self, values: Vec<Value>, interpreter: &Interpreter) -> Result<()> {
-        self.check_row(&values, interpreter)?;
+        self.check_row(&values, interpreter, None)?;
         let key = self.generate_next_index()?;
         let value = self
             .table_definition
@@ -142,7 +143,12 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
         false
     }
 
-    fn check_row(&self, row: &[Value], interpreter: &Interpreter) -> Result<()> {
+    fn check_row(
+        &self,
+        row: &[Value],
+        interpreter: &Interpreter,
+        exclude: Option<&TableRow>,
+    ) -> Result<()> {
         for (check, name) in self.table_definition.checks() {
             if !evaluate_expression(check, &(self, row))?.is_true() {
                 return Err(ExecutionError::CheckConstraintFailed(name.to_owned()).into());
@@ -161,15 +167,17 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
                 .into());
             }
         }
-        for tree_row in self.tree.iter() {
-            let (_, row_bytes) = tree_row?;
+        for tree_row in self.iter() {
+            let tree_row = tree_row?;
+            if let Some(exclude) = exclude {
+                if &tree_row == exclude {
+                    continue;
+                }
+            }
             for (unique_set, name) in self.uniques() {
                 let mut identical = true;
                 for &index in unique_set {
-                    let other_value = self
-                        .table_definition
-                        .columns()
-                        .get_data(index, &row_bytes)?;
+                    let other_value = self.get_value(index, &tree_row)?;
                     if !row[index].compare(&other_value).is_equal() {
                         identical = false;
                         break;
@@ -220,6 +228,14 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
         } else {
             Ok(0u64.to_be_bytes())
         }
+    }
+}
+
+impl<C: Borrow<Columns>, N: AsRef<str>> Deref for TableHandler<C, N> {
+    type Target = TableDefinition<C>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.table_definition
     }
 }
 
@@ -359,14 +375,14 @@ impl<'a, C: Borrow<Columns>, N: AsRef<str>> RowBuilder<'a, C, N> {
         Ok(())
     }
 
-    pub fn finalise(self) -> Result<Vec<Value>> {
+    pub fn finalise(self) -> Vec<Value> {
         let mut new_row = self.new_row;
         for (i, value) in new_row.iter_mut().enumerate() {
             if !self.inserted.contains(&i) {
                 *value = self.handler.get_default(i);
             }
         }
-        Ok(new_row)
+        new_row
     }
 }
 

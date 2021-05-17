@@ -49,6 +49,12 @@ pub enum ExecutionError {
     ForeignKeyConstraintFailed(String),
     #[error("multiple primary keys for table `{0}`")]
     MultiplePrimaryKey(String),
+    #[error("multiple default values for column `{0}`")]
+    MultipleDefault(String),
+    #[error("multiple NOT NULL constraints for column `{0}`")]
+    MultipleNotNull(String),
+    #[error("multiple UNIQUE constraints for column `{0}`")]
+    MultipleUnique(String),
     #[error("missing constraint for join")]
     NoConstraintOnJoin,
     #[error("no tables specified")]

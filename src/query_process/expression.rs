@@ -1,9 +1,8 @@
 use sqlparser::ast::{BinaryOperator, Expr, Ident, Value};
 
 use crate::{
-    ast::{BinaryOp, ComparisonOp, MathematicalOp, UnresolvedExpression},
+    ast::{BinaryOp, ColumnName, ComparisonOp, MathematicalOp, UnresolvedExpression},
     data_types::TypeContents,
-    storage::ColumnName,
 };
 
 pub fn parse_expression(expression: Expr) -> UnresolvedExpression {

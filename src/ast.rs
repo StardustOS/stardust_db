@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use crate::{
     data_types::{IntegerStorage, Type, Value},
     error::{Error, Result},
-    storage::ColumnName,
 };
 use std::{
     convert::TryFrom,
@@ -29,6 +28,7 @@ pub struct CreateTable {
     pub primary_key: Option<(Vec<usize>, String)>,
     pub checks: Vec<(UnresolvedExpression, String)>,
     pub foreign_keys: Vec<ForeignKey>,
+    pub if_not_exists: bool,
 }
 
 impl CreateTable {
@@ -39,6 +39,7 @@ impl CreateTable {
         primary_key: Option<(Vec<usize>, String)>,
         checks: Vec<(UnresolvedExpression, String)>,
         foreign_keys: Vec<ForeignKey>,
+        if_not_exists: bool,
     ) -> Self {
         Self {
             name,
@@ -47,6 +48,7 @@ impl CreateTable {
             primary_key,
             checks,
             foreign_keys,
+            if_not_exists,
         }
     }
 }
@@ -423,5 +425,43 @@ impl Update {
             assignments,
             filter,
         }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash, PartialEq, Eq)]
+pub struct ColumnName {
+    table_name: Option<String>,
+    column_name: String,
+}
+
+impl ColumnName {
+    pub fn new(table_name: Option<String>, column_name: String) -> Self {
+        Self {
+            table_name,
+            column_name,
+        }
+    }
+
+    pub fn table_name(&self) -> Option<&str> {
+        self.table_name.as_ref().map(|n| n.as_ref())
+    }
+
+    pub fn column_name(&self) -> &str {
+        self.column_name.as_ref()
+    }
+
+    pub fn destructure(self) -> (Option<String>, String) {
+        (self.table_name, self.column_name)
+    }
+}
+
+impl std::fmt::Display for ColumnName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /*if let Some(table_name) = &self.table_name {
+            write!(f, "{}.{}", table_name, self.column_name)
+        } else {
+            write!(f, "{}", self.column_name)
+        }*/
+        write!(f, "{}", self.column_name)
     }
 }

@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     data_types::{IntegerStorage, TypeContents, Value},
-    interpreter::Relation,
+    relation::Relation,
     temporary_database::TemporaryDatabase,
     Database,
 };

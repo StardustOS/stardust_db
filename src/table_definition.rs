@@ -1,12 +1,13 @@
-use std::{borrow::Borrow, collections::HashMap};
+use std::{borrow::Borrow, collections::HashMap, ops::Deref};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    ast::ColumnName,
     data_types::{Type, Value},
     error::{ExecutionError, Result},
     resolved_expression::{Expression, ResolvedColumn},
-    storage::{ColumnKey, ColumnName, Columns},
+    storage::{ColumnKey, Columns},
     TableColumns,
 };
 
@@ -37,6 +38,7 @@ impl<C: Borrow<Columns>> TableDefinition<C> {
         not_nulls: Vec<usize>,
         uniques: Vec<(Vec<usize>, String)>,
         primary_key: Option<(Vec<usize>, String)>,
+        checks: Vec<(Expression, String)>,
         defaults: HashMap<usize, Value>,
     ) -> Self {
         Self {
@@ -44,13 +46,9 @@ impl<C: Borrow<Columns>> TableDefinition<C> {
             not_nulls,
             uniques,
             primary_key,
-            checks: Vec::new(),
+            checks,
             defaults,
         }
-    }
-
-    pub fn add_check(&mut self, check: Expression, name: String) {
-        self.checks.push((check, name))
     }
 
     pub fn num_columns(&self) -> usize {
@@ -111,20 +109,18 @@ impl<C: Borrow<Columns>> TableDefinition<C> {
     }
 }
 
+impl<C: Borrow<Columns>> Deref for TableDefinition<C> {
+    type Target = Columns;
+
+    fn deref(&self) -> &Self::Target {
+        self.columns()
+    }
+}
+
 impl<C: Borrow<Columns>> TableColumns for (&TableDefinition<C>, &str) {
     fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn> {
         let (definition, this_name) = self;
-        let (table, column) = name.destructure();
-        if let Some(table) = table {
-            if table == *this_name && definition.contains_column(&column) {
-                Ok(ResolvedColumn::new(table, column))
-            } else {
-                Err(ExecutionError::NoColumn(format!("{}.{}", table, column)).into())
-            }
-        } else if definition.contains_column(&column) {
-            Ok(ResolvedColumn::new(this_name.to_string(), column))
-        } else {
-            Err(ExecutionError::NoColumn(format!("{}.{}", this_name.to_string(), column)).into())
-        }
+        let columns = definition.columns();
+        (columns, *this_name).resolve_name(name)
     }
 }

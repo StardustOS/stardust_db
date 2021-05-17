@@ -7,21 +7,16 @@ use crate::{
     error::{Error, ExecutionError, Result},
     foreign_key::ForeignKeys,
     join_handler::JoinHandler,
+    relation::Relation,
     resolved_expression::Expression,
     storage::Columns,
     table_definition::TableDefinition,
     table_handler::{RowBuilder, TableHandler, TableRowUpdater},
     Empty, GetData, TableColumns,
 };
-use itertools::Itertools;
 use once_cell::sync::OnceCell;
 use sled::{open, Db};
-use std::{
-    borrow::Borrow,
-    collections::{HashMap, HashSet},
-    fmt::{Display, Formatter},
-    path::Path,
-};
+use std::{borrow::Borrow, collections::HashMap, path::Path};
 
 static FOREIGN_KEY_COLUMNS: OnceCell<Columns> = OnceCell::new();
 
@@ -43,11 +38,9 @@ impl Interpreter {
         })
     }
 
-    pub fn execute(&self, query: SqlQuery, parameters: &[Value]) -> Result<Relation> {
+    pub fn execute(&self, query: SqlQuery) -> Result<Relation> {
         let result = match query {
-            SqlQuery::CreateTable(create_table) => {
-                self.execute_create_table(create_table, parameters)
-            }
+            SqlQuery::CreateTable(create_table) => self.execute_create_table(create_table),
             SqlQuery::Insert(insert) => self.execute_insert(insert),
             SqlQuery::SelectQuery(select) => self.execute_select(select),
             SqlQuery::DropTable(drop_table) => self.execute_drop_table(drop_table),
@@ -102,11 +95,7 @@ impl Interpreter {
         Ok(ForeignKeys::new(handler))
     }
 
-    fn execute_create_table(
-        &self,
-        create_table: CreateTable,
-        _parameters: &[Value],
-    ) -> Result<Relation> {
+    fn execute_create_table(&self, create_table: CreateTable) -> Result<Relation> {
         let CreateTable {
             name,
             columns,
@@ -114,13 +103,18 @@ impl Interpreter {
             primary_key,
             checks,
             foreign_keys,
+            if_not_exists,
         } = create_table;
         let table_name = name;
         let directory = self.db.open_tree("@tables")?;
         if directory.contains_key(table_name.as_bytes())? {
-            return Err(Error::Execution(ExecutionError::TableExists(table_name)));
+            if if_not_exists {
+                return Ok(Default::default());
+            } else {
+                return Err(Error::Execution(ExecutionError::TableExists(table_name)));
+            }
         }
-        let mut columns_definition = Columns::new();
+        let mut columns_definition = Columns::with_capacity(columns.len());
         let mut not_nulls = Vec::new();
         let mut defaults = HashMap::new();
         for (
@@ -145,21 +139,33 @@ impl Interpreter {
             }
         }
 
-        let mut table_definition = TableDefinition::new(
+        let checks = checks
+            .into_iter()
+            .map(|(check, name)| {
+                Ok((
+                    resolve_expression(check, &(&columns_definition, table_name.as_str()))?,
+                    name,
+                ))
+            })
+            .collect::<Result<_>>()?;
+
+        let table_definition = TableDefinition::new(
             columns_definition,
             not_nulls,
             uniques,
             primary_key,
+            checks,
             defaults,
         );
 
         for key in foreign_keys {
             let foreign_table = self.open_table(&key.foreign_table, None)?;
-            let referred_columns_indexes = key
+            let mut referred_columns_indexes = key
                 .referred_columns
                 .iter()
                 .map(|s| foreign_table.column_index(s.as_str()))
-                .collect::<Result<_>>()?;
+                .collect::<Result<Vec<_>>>()?;
+            referred_columns_indexes.sort_unstable();
             if !foreign_table.contains_unique(referred_columns_indexes) {
                 return Err(ExecutionError::ForeignKeyNotUnique(key.name).into());
             }
@@ -183,11 +189,6 @@ impl Interpreter {
                 }
             }
             self.foreign_keys()?.add_key(key, self, &table_name)?;
-        }
-
-        for (check, name) in checks {
-            let check = resolve_expression(check, &(&table_definition, table_name.as_str()))?;
-            table_definition.add_check(check, name);
         }
 
         let encoded: Vec<u8> = bincode::serialize(&table_definition)?;
@@ -222,7 +223,7 @@ impl Interpreter {
                 for (key, value) in specified_columns.iter().zip(row.into_iter()) {
                     new_row.insert(key.as_str(), value)?;
                 }
-                let new_row = new_row.finalise()?;
+                let new_row = new_row.finalise();
                 table.insert_values(new_row, self)?;
             }
         } else {
@@ -249,34 +250,34 @@ impl Interpreter {
                     selection,
                 } = select;
 
-                let table_handler = JoinHandler::new(self, from)?;
+                let join_handler = JoinHandler::new(self, from)?;
                 let mut result_column_names = Vec::with_capacity(projections.len());
                 let mut projection_expressions = Vec::with_capacity(projections.len());
 
                 let selection = selection
-                    .map(|e| resolve_expression(e, &table_handler))
+                    .map(|e| resolve_expression(e, &join_handler))
                     .transpose()?;
                 for projection in projections {
                     match projection {
                         Projection::Wildcard => {
-                            for column_name in table_handler.all_column_names()? {
+                            for column_name in join_handler.all_column_names()? {
                                 result_column_names.push(column_name.to_string());
                                 projection_expressions.push(Expression::Identifier(column_name));
                             }
                         }
                         Projection::QualifiedWildcard(table_name) => {
-                            for column_name in table_handler.column_names(&table_name)? {
+                            for column_name in join_handler.column_names(&table_name)? {
                                 result_column_names.push(column_name.to_string());
                                 projection_expressions.push(Expression::Identifier(column_name));
                             }
                         }
                         Projection::Unaliased(e) => {
                             result_column_names.push(e.to_string());
-                            projection_expressions.push(resolve_expression(e, &table_handler)?);
+                            projection_expressions.push(resolve_expression(e, &join_handler)?);
                         }
                         Projection::Aliased(e, alias) => {
                             result_column_names.push(alias);
-                            projection_expressions.push(resolve_expression(e, &table_handler)?);
+                            projection_expressions.push(resolve_expression(e, &join_handler)?);
                         }
                     }
                 }
@@ -284,18 +285,19 @@ impl Interpreter {
                 self.generate_results(
                     result_column_names,
                     projection_expressions,
-                    table_handler,
+                    join_handler,
                     selection,
                 )
             }
             SelectQuery::Values(values) => {
                 let Values { rows } = values;
-                assert!(!rows.is_empty());
-                let mut columns = Vec::with_capacity(rows[0].len());
-                for expression in &rows[0] {
-                    let name = expression.to_string();
-                    columns.push(name);
+                if rows.is_empty() {
+                    return Err(Error::Internal("empty rows".to_owned()));
                 }
+                let columns = rows[0]
+                    .iter()
+                    .map(UnresolvedExpression::to_string)
+                    .collect();
                 let mut result = Relation::new(columns);
                 for row in rows {
                     let values = row
@@ -388,129 +390,6 @@ impl Interpreter {
             self.db.drop_tree(name.as_bytes())?;
         }
         Ok(Default::default())
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Relation {
-    column_names: Vec<String>,
-    rows: Vec<Vec<Value>>,
-}
-
-impl Relation {
-    pub fn new(column_names: Vec<String>) -> Self {
-        Self {
-            column_names,
-            rows: Vec::new(),
-        }
-    }
-
-    pub fn add_row(&mut self, row: Vec<Value>) -> Result<()> {
-        if self.column_names.len() == row.len() {
-            self.rows.push(row);
-            Ok(())
-        } else {
-            Err(Error::Execution(ExecutionError::WrongNumColumns {
-                expected: self.column_names.len(),
-                actual: self.rows.len(),
-            }))
-        }
-    }
-
-    pub fn column_names(&self) -> impl Iterator<Item = &str> {
-        self.column_names.iter().map(|n| n.as_ref())
-    }
-
-    pub fn contains_column(&self, column: &str) -> bool {
-        self.column_names.iter().any(|c| column == c)
-    }
-
-    pub fn rows(&self) -> impl Iterator<Item = &[Value]> {
-        self.rows.iter().map(|r| r.as_slice())
-    }
-
-    pub fn take_rows(self) -> Vec<Vec<Value>> {
-        self.rows
-    }
-
-    pub fn num_columns(&self) -> usize {
-        self.column_names.len()
-    }
-
-    pub fn num_rows(&self) -> usize {
-        self.rows.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.rows.is_empty() && self.column_names.is_empty()
-    }
-
-    pub fn get_value(&self, column: usize, row: usize) -> &Value {
-        &self.rows[row][column]
-    }
-
-    pub fn get_value_named(&self, column: &str, row: usize) -> Option<&Value> {
-        let column_index = self
-            .column_names
-            .iter()
-            .find_position(|c| column == c.as_str())
-            .map(|(i, _)| i)?;
-        Some(&self.rows[row][column_index])
-    }
-
-    pub fn assert_equals(&self, rows: HashSet<Vec<Value>>, column_names: Vec<&str>) {
-        assert_eq!(self.rows.len(), rows.len());
-
-        assert_eq!(self.column_names, column_names);
-        dbg!(&self.rows);
-
-        for row in &self.rows {
-            assert!(rows.contains(row));
-        }
-    }
-
-    pub fn ordered_equals(&self, rows: Vec<Vec<Value>>, column_names: Vec<&str>) -> bool {
-        self.rows == rows && self.column_names == column_names
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = Row<'_>> {
-        self.rows
-            .iter()
-            .map(move |row| Row::new(self.column_names.as_slice(), row.as_slice()))
-    }
-}
-
-pub struct Row<'a> {
-    columns: &'a [String],
-    row: &'a [Value],
-}
-
-impl<'a> Row<'a> {
-    pub fn new(columns: &'a [String], row: &'a [Value]) -> Self {
-        Self { columns, row }
-    }
-
-    pub fn get_value_index(&self, index: usize) -> Option<&Value> {
-        self.row.get(index)
-    }
-
-    pub fn get_value_named(&self, column_name: &str) -> Option<&Value> {
-        self.columns
-            .iter()
-            .position(|name| name.as_str() == column_name)
-            .map(|index| &self.row[index])
-    }
-}
-
-impl Display for Relation {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if !self.column_names.is_empty() {
-            writeln!(f, "{}", self.column_names.iter().join("|"))?;
-            for row in &self.rows {
-                writeln!(f, "{}", row.iter().join("|"))?;
-            }
-        }
-        Ok(())
     }
 }
 

@@ -1322,6 +1322,28 @@ fn foreign_key_delete_set_default_no_new_value() {
 }
 
 #[test]
+fn foreign_key_update_no_change() {
+    let db = temp_db();
+    let _ = db
+        .execute_query(
+            "CREATE TABLE foreign (fname string UNIQUE, id int);
+            INSERT INTO foreign VALUES ('User', 1);
+            CREATE TABLE primary (name string, age int, FOREIGN KEY (name) REFERENCES foreign(fname));
+            INSERT INTO primary VALUES ('User', 23);
+            UPDATE foreign SET id = 5;
+            ",
+        )
+        .unwrap();
+    let result = db.execute_query("SELECT * FROM primary").unwrap();
+    assert_eq!(result.len(), 1);
+    result[0].assert_equals(set![vec!["User".into(), 23.into()]], vec!["name", "age"]);
+
+    let result = db.execute_query("SELECT * FROM foreign").unwrap();
+    assert_eq!(result.len(), 1);
+    result[0].assert_equals(set![vec!["User".into(), 5.into()]], vec!["fname", "id"])
+}
+
+#[test]
 fn foreign_key_delete_set_null() {
     let db = temp_db();
     let _ = db

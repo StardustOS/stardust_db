@@ -4,47 +4,12 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    ast::ColumnName,
     data_types::{Type, Value},
     error::{Error, ExecutionError, Result},
+    resolved_expression::ResolvedColumn,
+    TableColumns,
 };
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Hash, PartialEq, Eq)]
-pub struct ColumnName {
-    table_name: Option<String>,
-    column_name: String,
-}
-
-impl ColumnName {
-    pub fn new(table_name: Option<String>, column_name: String) -> Self {
-        Self {
-            table_name,
-            column_name,
-        }
-    }
-
-    pub fn table_name(&self) -> Option<&str> {
-        self.table_name.as_ref().map(|n| n.as_ref())
-    }
-
-    pub fn column_name(&self) -> &str {
-        self.column_name.as_ref()
-    }
-
-    pub fn destructure(self) -> (Option<String>, String) {
-        (self.table_name, self.column_name)
-    }
-}
-
-impl std::fmt::Display for ColumnName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        /*if let Some(table_name) = &self.table_name {
-            write!(f, "{}.{}", table_name, self.column_name)
-        } else {
-            write!(f, "{}", self.column_name)
-        }*/
-        write!(f, "{}", self.column_name)
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnEntry {
@@ -265,4 +230,22 @@ fn get_unsized_data(dictionary_position: usize, end_position: usize, row: &[u8])
     let data_position =
         u16::from_be_bytes(row[dictionary_position..next_start].try_into().unwrap()) as usize;
     &row[data_position..end]
+}
+
+impl TableColumns for (&Columns, &str) {
+    fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn> {
+        let (columns, this_name) = self;
+        let (table, column) = name.destructure();
+        if let Some(table) = table {
+            if table == *this_name && columns.contains_column(&column) {
+                Ok(ResolvedColumn::new(table, column))
+            } else {
+                Err(ExecutionError::NoColumn(format!("{}.{}", table, column)).into())
+            }
+        } else if columns.contains_column(&column) {
+            Ok(ResolvedColumn::new(this_name.to_string(), column))
+        } else {
+            Err(ExecutionError::NoColumn(format!("{}.{}", this_name.to_string(), column)).into())
+        }
+    }
 }

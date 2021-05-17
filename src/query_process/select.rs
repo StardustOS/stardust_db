@@ -38,6 +38,7 @@ fn parse_select(select: Select) -> Result<SelectContents> {
     let selection = select.selection.map(parse_expression);
     Ok(SelectContents::new(projections, from, selection))
 }
+
 fn parse_table_joins<I>(mut joins: I) -> Result<Option<TableJoins>>
 where
     I: Iterator<Item = TableWithJoins>,
@@ -89,7 +90,10 @@ fn parse_table_factor(factor: TableFactor) -> Result<TableJoins> {
     }
 }
 
-fn parse_joins(left: TableJoins, mut joins: impl Iterator<Item = Join>) -> Result<TableJoins> {
+fn parse_joins<I>(left: TableJoins, mut joins: I) -> Result<TableJoins>
+where
+    I: Iterator<Item = Join>,
+{
     match joins.next() {
         None => Ok(left),
         Some(join) => {

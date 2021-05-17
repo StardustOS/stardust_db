@@ -6,12 +6,12 @@ use std::{
 use auto_enums::auto_enum;
 
 use crate::{
-    ast::{BinaryOp, ComparisonOp, JoinConstraint, JoinOperator, TableJoins},
+    ast::{BinaryOp, ColumnName, ComparisonOp, JoinConstraint, JoinOperator, TableJoins},
     data_types::Value,
     error::{Error, ExecutionError, Result},
     interpreter::{evaluate_expression, resolve_expression, Interpreter},
     resolved_expression::{Expression, ResolvedColumn},
-    storage::{ColumnName, Columns},
+    storage::Columns,
     table_handler::{TableHandler, TableIter, TableRow},
     GetData, TableColumns,
 };

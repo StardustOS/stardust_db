@@ -1,7 +1,6 @@
 use itertools::Itertools;
 use sqlparser::ast::{
-    ColumnDef, ColumnOption, DataType, FileFormat, HiveDistributionStyle, HiveFormat, ObjectName,
-    Query, ReferentialAction, SqlOption, TableConstraint,
+    ColumnDef, ColumnOption, DataType, Ident, ObjectName, ReferentialAction, TableConstraint,
 };
 
 use crate::{
@@ -11,24 +10,11 @@ use crate::{
     query_process::parse_expression,
 };
 
-#[allow(clippy::too_many_arguments)]
 pub fn parse_create_table(
-    _or_replace: bool,
-    _temporary: bool,
-    _external: bool,
-    _if_not_exists: bool,
     name: ObjectName,
     columns: Vec<ColumnDef>,
     constraints: Vec<TableConstraint>,
-    _hive_distribution: HiveDistributionStyle,
-    _hive_formats: Option<HiveFormat>,
-    _table_properties: Vec<SqlOption>,
-    _with_options: Vec<SqlOption>,
-    _file_format: Option<FileFormat>,
-    _location: Option<String>,
-    _query: Option<Box<Query>>,
-    _without_rowid: bool,
-    _like: Option<ObjectName>,
+    if_not_exists: bool,
 ) -> Result<CreateTable> {
     let table_name = name.to_string();
     let mut uniques = Vec::new();
@@ -42,6 +28,7 @@ pub fn parse_create_table(
         .map(|(index, c)| {
             let mut default = None;
             let mut not_null = false;
+            let mut unique = false;
             let ColumnDef {
                 name,
                 data_type,
@@ -55,14 +42,28 @@ pub fn parse_create_table(
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| name.to_string());
                 match column_option.option {
-                    ColumnOption::Default(expr) => default = Some(parse_expression(expr)),
-                    ColumnOption::NotNull => not_null = true,
+                    ColumnOption::Default(expr) => {
+                        if default.is_some() {
+                            return Err(ExecutionError::MultipleDefault(column_name).into());
+                        }
+                        default = Some(parse_expression(expr))
+                    }
+                    ColumnOption::NotNull => {
+                        if not_null {
+                            return Err(ExecutionError::MultipleNotNull(column_name).into());
+                        }
+                        not_null = true
+                    }
                     ColumnOption::Unique { is_primary } => {
+                        if unique {
+                            return Err(ExecutionError::MultipleUnique(column_name).into());
+                        }
+                        unique = true;
                         if is_primary {
                             if primary_key.is_some() {
-                                return Err(Error::Execution(ExecutionError::MultiplePrimaryKey(
-                                    table_name.clone(),
-                                )));
+                                return Err(
+                                    ExecutionError::MultiplePrimaryKey(table_name.clone()).into()
+                                );
                             } else {
                                 primary_key = Some((vec![index], name));
                             }
@@ -120,7 +121,7 @@ pub fn parse_create_table(
                 let name = name
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| columns.iter().map(|c| c.to_string()).join(", "));
-                let unique_set = columns
+                let mut unique_set = columns
                     .iter()
                     .map(|column| {
                         let column_name = column.to_string();
@@ -130,6 +131,7 @@ pub fn parse_create_table(
                             .ok_or(Error::Execution(ExecutionError::NoColumn(column_name)))
                     })
                     .collect::<Result<Vec<_>>>()?;
+                unique_set.sort_unstable();
                 if is_primary {
                     if primary_key.is_some() {
                         return Err(Error::Execution(ExecutionError::MultiplePrimaryKey(
@@ -154,20 +156,6 @@ pub fn parse_create_table(
                     || format!("__fkey{}", foreign_keys.len()),
                     |n| n.to_string(),
                 );
-                let columns = columns
-                    .iter()
-                    .map(|column| column.to_string())
-                    .collect::<Vec<_>>();
-                let referred_columns = match referred_columns.as_slice() {
-                    [c] => vec![c.to_string()],
-                    _ => {
-                        return Err(ExecutionError::IncorrectNumForeignKeyReferredColumns {
-                            expected: 1,
-                            found: referred_columns.len(),
-                        }
-                        .into())
-                    }
-                };
                 if columns.len() != referred_columns.len() {
                     return Err(ExecutionError::IncorrectNumForeignKeyReferredColumns {
                         expected: columns.len(),
@@ -175,6 +163,11 @@ pub fn parse_create_table(
                     }
                     .into());
                 }
+                let columns = columns.iter().map(Ident::to_string).collect::<Vec<_>>();
+                let referred_columns = referred_columns
+                    .iter()
+                    .map(Ident::to_string)
+                    .collect::<Vec<_>>();
                 foreign_keys.push(ForeignKey::new(
                     name,
                     columns,
@@ -205,6 +198,7 @@ pub fn parse_create_table(
         primary_key,
         checks,
         foreign_keys,
+        if_not_exists,
     ))
 }
 
