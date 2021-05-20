@@ -35,10 +35,6 @@ impl ColumnEntry {
         self.position
     }
 
-    pub fn null_index(&self) -> usize {
-        self.null_index
-    }
-
     pub fn bitmask_index(&self) -> (usize, usize) {
         (self.null_index / 8, self.null_index % 8)
     }
@@ -68,7 +64,7 @@ impl Columns {
         self.columns.contains_key(column)
     }
 
-    pub fn len(&self) -> usize {
+    pub fn num_columns(&self) -> usize {
         self.columns.len()
     }
 
@@ -87,10 +83,6 @@ impl Columns {
 
     pub fn get_index(&self, column: &str) -> Option<usize> {
         self.columns.get_index_of(column)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.columns.is_empty()
     }
 
     pub fn column_names(&self) -> impl Iterator<Item = &str> {

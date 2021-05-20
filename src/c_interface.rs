@@ -180,8 +180,7 @@ pub unsafe extern "C" fn execute_query(
         },
         Err(e) => {
             let err_str = e.to_string();
-            fill_buffer(&err_str, err_buff, err_buff_len, true);
-            return STARDUST_DB_EXECUTION_ERROR;
+            return result_to_error!(fill_buffer(&err_str, err_buff, err_buff_len, true, STARDUST_DB_EXECUTION_ERROR))
         }
     }
     STARDUST_DB_OK
@@ -289,29 +288,30 @@ pub unsafe extern "C" fn is_int_index(
 unsafe fn get_string(value: &Value, string_buffer: *mut c_char, buffer_len: usize) -> c_int {
     match value {
         Value::TypedValue(TypeContents::String(string)) => {
-            fill_buffer(string, string_buffer, buffer_len, false)
+            result_to_error!(fill_buffer(string, string_buffer, buffer_len, false, STARDUST_DB_OK))
         }
-
         Value::Null => STARDUST_DB_VALUE_NULL,
         _ => STARDUST_DB_VALUE_WRONG_TYPE,
     }
 }
 
-unsafe fn fill_buffer(
+unsafe fn fill_buffer<T>(
     string: &str,
     mut string_buffer: *mut c_char,
     buffer_len: usize,
     truncate: bool,
-) -> c_int {
-    if !truncate && string.len() >= buffer_len {
-        return STARDUST_DB_BUFFER_TOO_SMALL;
-    }
+    ok_value: T
+) -> Result<T, c_int> {
     for byte in string.bytes().take(buffer_len - 1) {
         *string_buffer = byte as c_char;
         string_buffer = string_buffer.add(1);
     }
     *string_buffer = 0;
-    STARDUST_DB_OK
+    if !truncate && string.len() >= buffer_len {
+        Err(STARDUST_DB_BUFFER_TOO_SMALL)
+    } else {
+        Ok(ok_value)
+    }
 }
 
 unsafe fn as_int(value: &Value, int_buffer: *mut IntegerStorage) -> c_int {
@@ -335,7 +335,8 @@ pub unsafe extern "C" fn get_string_index(
     buffer_len: usize,
 ) -> c_int {
     let value = result_to_error!(get_value_index(row_set, column));
-    get_string(value, string_buffer, buffer_len)
+    get_string(value, string_buffer, buffer_len);
+    STARDUST_DB_OK
 }
 
 /// If the value at the specified column is an integer, copy the value to the buffer, otherwise a type error is returned.
@@ -360,7 +361,7 @@ pub unsafe extern "C" fn get_string_index_cast(
 ) -> c_int {
     let value = result_to_error!(get_value_index(row_set, column));
     if let Some(string) = value.cast_string() {
-        fill_buffer(&string, string_buffer, buffer_len, false)
+        result_to_error!(fill_buffer(&string, string_buffer, buffer_len, false, STARDUST_DB_OK))
     } else {
         STARDUST_DB_VALUE_NULL
     }
@@ -440,7 +441,8 @@ pub unsafe extern "C" fn get_string_named(
     buffer_len: usize,
 ) -> c_int {
     let value = result_to_error!(get_value_named(row_set, column));
-    get_string(value, string_buffer, buffer_len)
+    get_string(value, string_buffer, buffer_len);
+    STARDUST_DB_OK
 }
 
 /// If the value at the specified column is an integer, copy the value to the buffer, otherwise a type error is returned.
@@ -465,7 +467,7 @@ pub unsafe extern "C" fn get_string_named_cast(
 ) -> c_int {
     let value = result_to_error!(get_value_named(row_set, column));
     if let Some(string) = value.cast_string() {
-        fill_buffer(&string, string_buffer, buffer_len, false)
+        result_to_error!(fill_buffer(&string, string_buffer, buffer_len, false, STARDUST_DB_OK))
     } else {
         STARDUST_DB_VALUE_NULL
     }

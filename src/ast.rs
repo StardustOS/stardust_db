@@ -206,16 +206,6 @@ impl std::fmt::Display for UnresolvedExpression {
     }
 }
 
-impl UnresolvedExpression {
-    pub fn to_column_name(&self) -> ColumnName {
-        match self {
-            UnresolvedExpression::Identifier(c) => c.clone(),
-            UnresolvedExpression::Value(v) => ColumnName::new(None, v.to_string()),
-            UnresolvedExpression::BinaryOp(_, _, _) => ColumnName::new(None, self.to_string()),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum BinaryOp {
     And,
@@ -440,14 +430,6 @@ impl ColumnName {
             table_name,
             column_name,
         }
-    }
-
-    pub fn table_name(&self) -> Option<&str> {
-        self.table_name.as_ref().map(|n| n.as_ref())
-    }
-
-    pub fn column_name(&self) -> &str {
-        self.column_name.as_ref()
     }
 
     pub fn destructure(self) -> (Option<String>, String) {

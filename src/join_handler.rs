@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    iter,
 };
 
 use auto_enums::auto_enum;
@@ -44,13 +43,6 @@ impl JoinHandler {
         match self {
             JoinHandler::Join(join) => join.column_names(table_name),
             JoinHandler::Empty => Err(ExecutionError::NoTables.into()),
-        }
-    }
-
-    pub fn contains_table(&self, table_name: &str) -> bool {
-        match self {
-            Self::Join(join) => join.has_table(table_name),
-            Self::Empty => false,
         }
     }
 
@@ -224,21 +216,7 @@ impl Join {
         })
     }
 
-    #[auto_enum(Iterator)]
-    fn table_iter(&self) -> impl Iterator<Item = &TableHandler<Columns, String>> + '_ {
-        match self {
-            Join::Table(table) => iter::once(table),
-            Join::Join { left, right, .. } => {
-                Box::new(left.table_iter().chain(right.table_iter())) as Box<dyn Iterator<Item = _>>
-            }
-        }
-    }
-
-    pub fn table_names(&self) -> impl Iterator<Item = &str> + '_ {
-        self.table_iter().map(|t| t.aliased_table_name())
-    }
-
-    fn table_for_column(&'_ self, column_name: &str) -> Option<&'_ str> {
+    fn table_for_column(&self, column_name: &str) -> Option<&str> {
         match self {
             Join::Table(t) => t
                 .contains_column(column_name)
@@ -630,20 +608,6 @@ pub enum RowValue<'a> {
 impl<'a> RowValue<'a> {
     fn new(row: &'a [TableRow]) -> Self {
         Self::Data(row)
-    }
-
-    pub fn empty() -> Self {
-        Self::Empty
-    }
-
-    pub fn split_at(&self, position: usize) -> (Self, Self) {
-        match self {
-            RowValue::Data(data) => {
-                let (left, right) = data.split_at(position);
-                (Self::Data(left), Self::Data(right))
-            }
-            RowValue::Empty => (Self::Empty, Self::Empty),
-        }
     }
 }
 

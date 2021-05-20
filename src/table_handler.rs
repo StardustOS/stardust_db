@@ -2,11 +2,11 @@ use std::{borrow::Borrow, collections::HashSet, convert::TryInto, mem::size_of, 
 
 use auto_enums::auto_enum;
 use itertools::Itertools;
-use sled::{IVec, Tree};
+use sled::{Batch, IVec, Tree};
 
 use crate::{
     ast::ColumnName,
-    data_types::{Type, Value},
+    data_types::Value,
     foreign_key::Action,
     interpreter::{evaluate_expression, Interpreter},
     storage::{ColumnKey, Columns},
@@ -41,28 +41,8 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
         }
     }
 
-    pub fn get_data_type(&self, column_name: &str) -> Option<Type> {
-        self.table_definition.get_data_type(column_name)
-    }
-
     pub fn get_value<K: ColumnKey>(&self, column_name: K, row: &TableRow) -> Result<Value> {
         self.table_definition.get_data(column_name, &row.right)
-    }
-
-    pub fn contains_column(&self, column_name: &str) -> bool {
-        self.table_definition.contains_column(column_name)
-    }
-
-    pub fn column_index(&self, column_name: &str) -> Result<usize> {
-        self.table_definition.column_index(column_name)
-    }
-
-    pub fn column_names(&self) -> impl Iterator<Item = &str> {
-        self.table_definition.column_names()
-    }
-
-    pub fn column_name(&self, index: usize) -> Result<&str> {
-        self.table_definition.column_name(index)
     }
 
     pub fn iter(&self) -> TableIter {
@@ -81,12 +61,12 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
         Ok(())
     }
 
-    pub fn update_row(
+    fn update_get_left_right(
         &self,
         row: TableRow,
         interpreter: &Interpreter,
         new_row: Vec<Value>,
-    ) -> Result<()> {
+    ) -> Result<(IVec, Vec<u8>)> {
         self.check_row(&new_row, interpreter, Some(&row))?;
         for key in interpreter
             .foreign_keys()?
@@ -99,7 +79,29 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
             .table_definition
             .columns()
             .generate_row(new_row.into_iter())?;
-        self.tree.insert(row.left, right)?;
+        Ok((row.left, right))
+    }
+
+    pub fn update_row(
+        &self,
+        row: TableRow,
+        interpreter: &Interpreter,
+        new_row: Vec<Value>,
+    ) -> Result<()> {
+        let (left, right) = self.update_get_left_right(row, interpreter, new_row)?;
+        self.tree.insert(left, right)?;
+        Ok(())
+    }
+
+    pub fn update_row_batch(
+        &self,
+        row: TableRow,
+        interpreter: &Interpreter,
+        new_row: Vec<Value>,
+        batch: &mut Batch
+    ) -> Result<()> {
+        let (left, right) = self.update_get_left_right(row, interpreter, new_row)?;
+        batch.insert(left, right);
         Ok(())
     }
 
@@ -110,7 +112,23 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
             .table_definition
             .columns()
             .generate_row(values.into_iter())?;
-        self.tree.insert(key, value)?;
+        self.tree.insert(key.to_be_bytes(), value)?;
+        Ok(())
+    }
+
+    pub fn insert_values_batch(&self, values: Vec<Value>, interpreter: &Interpreter, batch: &mut Batch, key: &mut u64) -> Result<()> {
+        self.check_row(&values, interpreter, None)?;
+        let value = self
+            .table_definition
+            .columns()
+            .generate_row(values.into_iter())?;
+        batch.insert(&key.to_be_bytes(), value);
+        *key += 1;
+        Ok(())
+    }
+
+    pub fn apply_batch(&self, batch: Batch) -> Result<()> {
+        self.tree.apply_batch(batch)?;
         Ok(())
     }
 
@@ -197,14 +215,6 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
         Ok(())
     }
 
-    pub fn num_columns(&self) -> usize {
-        self.table_definition.num_columns()
-    }
-
-    pub fn get_default(&self, column: usize) -> Value {
-        self.table_definition.get_default(column)
-    }
-
     pub fn unaliased_table_name(&self) -> &str {
         self.table_name.as_ref()
     }
@@ -216,7 +226,7 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
             .unwrap_or_else(|| self.table_name.as_ref())
     }
 
-    fn generate_next_index(&self) -> Result<[u8; 8]> {
+    pub fn generate_next_index(&self) -> Result<u64> {
         if let Some((last_key, _)) = self.tree.last()? {
             let bytes = last_key
                 .get(..size_of::<u64>())
@@ -224,9 +234,9 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
                 .try_into()
                 .unwrap();
             let value = u64::from_be_bytes(bytes) + 1;
-            Ok(value.to_be_bytes())
+            Ok(value)
         } else {
-            Ok(0u64.to_be_bytes())
+            Ok(0u64)
         }
     }
 }
@@ -240,7 +250,6 @@ impl<C: Borrow<Columns>, N: AsRef<str>> Deref for TableHandler<C, N> {
 }
 
 pub struct TableIter {
-    tree: Tree,
     iter: sled::Iter,
 }
 
@@ -248,7 +257,6 @@ impl TableIter {
     pub fn new(tree: Tree) -> Self {
         Self {
             iter: tree.iter(),
-            tree,
         }
     }
 
@@ -273,15 +281,6 @@ impl TableIter {
             }
             true
         })
-    }
-
-    pub fn reset(&mut self) {
-        self.iter = self.tree.iter();
-    }
-
-    pub fn reset_next(&mut self) -> Result<Option<TableRow>> {
-        self.reset();
-        self.get_next()
     }
 }
 

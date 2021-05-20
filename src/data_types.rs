@@ -37,8 +37,8 @@ impl Type {
                     |_| Error::Internal("Incorrect number of bytes of Integer Decode".to_string()),
                 )?))
             }
-            Type::String => TypeContents::String(String::from_utf8(data.into()).map_err(|_| {
-                Error::Internal(format!("Could not decode bytes to string: {:?}", data))
+            Type::String => TypeContents::String(String::from_utf8(data.into()).map_err(|e| {
+                Error::Internal(format!("Could not decode bytes to string: {:?}, e: {}", data, e))
             })?),
         })
     }
@@ -266,18 +266,6 @@ impl Value {
                 Self::TypedValue(TypeContents::String(s)),
             ) => i.cmp(&string_to_int(s)).into(),
         }
-    }
-
-    pub fn compare_slices(this: &[Value], other: &[Value]) -> bool {
-        if this.len() != other.len() {
-            return false;
-        }
-        for (l, r) in this.iter().zip(other.iter()) {
-            if !l.compare(r).is_equal() {
-                return false;
-            }
-        }
-        true
     }
 }
 

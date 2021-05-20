@@ -1,7 +1,7 @@
-use std::{
-    collections::HashSet,
-    fmt::{Display, Formatter},
-};
+use std::fmt::{Display, Formatter};
+
+#[cfg(test)]
+use std::collections::HashSet;
 
 use itertools::Itertools;
 
@@ -17,14 +17,14 @@ pub struct Relation {
 }
 
 impl Relation {
-    pub fn new(column_names: Vec<String>) -> Self {
+    pub(crate) fn new(column_names: Vec<String>) -> Self {
         Self {
             column_names,
             rows: Vec::new(),
         }
     }
 
-    pub fn add_row(&mut self, row: Vec<Value>) -> Result<()> {
+    pub(crate) fn add_row(&mut self, row: Vec<Value>) -> Result<()> {
         if self.column_names.len() == row.len() {
             self.rows.push(row);
             Ok(())
@@ -77,7 +77,8 @@ impl Relation {
         Some(&self.rows[row][column_index])
     }
 
-    pub fn assert_equals(&self, rows: HashSet<Vec<Value>>, column_names: Vec<&str>) {
+    #[cfg(test)]
+    pub(crate) fn assert_equals(&self, rows: HashSet<Vec<Value>>, column_names: Vec<&str>) {
         assert_eq!(self.rows.len(), rows.len());
 
         assert_eq!(self.column_names, column_names);
@@ -86,10 +87,6 @@ impl Relation {
         for row in &self.rows {
             assert!(rows.contains(row));
         }
-    }
-
-    pub fn ordered_equals(&self, rows: Vec<Vec<Value>>, column_names: Vec<&str>) -> bool {
-        self.rows == rows && self.column_names == column_names
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Row<'_>> {
@@ -105,7 +102,7 @@ pub struct Row<'a> {
 }
 
 impl<'a> Row<'a> {
-    pub fn new(columns: &'a [String], row: &'a [Value]) -> Self {
+    fn new(columns: &'a [String], row: &'a [Value]) -> Self {
         Self { columns, row }
     }
 

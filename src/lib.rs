@@ -10,23 +10,22 @@ use relation::Relation;
 use resolved_expression::ResolvedColumn;
 use sqlparser::{dialect::Dialect, parser::Parser};
 
-pub mod ast;
-pub mod data_types;
+mod ast;
+mod data_types;
 pub mod error;
-pub mod interpreter;
-pub mod join_handler;
-pub mod query_process;
-pub mod resolved_expression;
-pub mod storage;
-pub mod table_definition;
-pub mod table_handler;
+mod interpreter;
+mod join_handler;
+mod query_process;
+mod resolved_expression;
+mod storage;
+mod table_definition;
+mod table_handler;
 pub mod temporary_database;
 #[macro_use]
 mod utils;
-
 mod c_interface;
 mod foreign_key;
-mod relation;
+pub mod relation;
 #[cfg(test)]
 pub mod tests;
 
@@ -75,17 +74,13 @@ impl Database {
         }
         Ok(results)
     }
-
-    pub fn was_recovered(&self) -> bool {
-        self.interpreter.was_recovered()
-    }
 }
 
-pub trait GetData {
+pub(crate) trait GetData {
     fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value>;
 }
 
-pub struct Empty;
+pub(crate) struct Empty;
 
 impl GetData for Empty {
     fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value> {
@@ -93,7 +88,7 @@ impl GetData for Empty {
     }
 }
 
-pub trait TableColumns {
+pub(crate) trait TableColumns {
     fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn>;
 }
 

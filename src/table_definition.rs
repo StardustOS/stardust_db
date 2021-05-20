@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::ColumnName,
-    data_types::{Type, Value},
+    data_types::Value,
     error::{ExecutionError, Result},
     resolved_expression::{Expression, ResolvedColumn},
-    storage::{ColumnKey, Columns},
+    storage::Columns,
     TableColumns,
 };
 
@@ -51,10 +51,6 @@ impl<C: Borrow<Columns>> TableDefinition<C> {
         }
     }
 
-    pub fn num_columns(&self) -> usize {
-        self.columns.borrow().len()
-    }
-
     pub fn columns(&self) -> &Columns {
         self.columns.borrow()
     }
@@ -66,28 +62,8 @@ impl<C: Borrow<Columns>> TableDefinition<C> {
             .ok_or_else(|| ExecutionError::NoColumn(column_name.to_owned()).into())
     }
 
-    pub fn column_name(&self, index: usize) -> Result<&str> {
-        self.columns.borrow().column_name(index)
-    }
-
     pub fn get_default(&self, column: usize) -> Value {
         self.defaults.get(&column).cloned().unwrap_or_default()
-    }
-
-    pub fn get_data<K: ColumnKey>(&self, name: K, row: &[u8]) -> Result<Value> {
-        self.columns.borrow().get_data(name, row)
-    }
-
-    pub fn get_data_type(&self, column_name: &str) -> Option<Type> {
-        self.columns.borrow().get_data_type(column_name)
-    }
-
-    pub fn column_names(&self) -> impl Iterator<Item = &str> {
-        self.columns.borrow().column_names()
-    }
-
-    pub fn contains_column(&self, column: &str) -> bool {
-        self.columns.borrow().contains_column(column)
     }
 
     pub fn uniques(&self) -> impl Iterator<Item = (&[usize], &str)> {

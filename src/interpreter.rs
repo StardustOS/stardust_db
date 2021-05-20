@@ -15,7 +15,7 @@ use crate::{
     Empty, GetData, TableColumns,
 };
 use once_cell::sync::OnceCell;
-use sled::{open, Db};
+use sled::{Batch, Db, open};
 use std::{borrow::Borrow, collections::HashMap, path::Path};
 
 static FOREIGN_KEY_COLUMNS: OnceCell<Columns> = OnceCell::new();
@@ -26,10 +26,6 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
-    pub fn was_recovered(&self) -> bool {
-        self.db.was_recovered()
-    }
-
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Interpreter> {
         let db = open(path)?;
         Ok(Interpreter {
@@ -210,6 +206,8 @@ impl Interpreter {
         let TableName { name, alias } = table;
         let table = self.open_table(name, alias)?;
         let values = self.execute_select(values)?;
+        let mut batch = Batch::default();
+        let mut key = table.generate_next_index()?;
         if let Some(specified_columns) = specified_columns {
             if values.num_columns() != specified_columns.len() {
                 return Err(ExecutionError::WrongNumColumns {
@@ -224,7 +222,7 @@ impl Interpreter {
                     new_row.insert(key.as_str(), value)?;
                 }
                 let new_row = new_row.finalise();
-                table.insert_values(new_row, self)?;
+                table.insert_values_batch(new_row, self, &mut batch, &mut key)?;
             }
         } else {
             if values.num_columns() != table.num_columns() {
@@ -235,9 +233,11 @@ impl Interpreter {
                 .into());
             }
             for row in values.take_rows() {
-                table.insert_values(row, self)?
+                table.insert_values_batch(row, self, &mut batch, &mut key)?
             }
         }
+
+        table.apply_batch(batch)?;
         Ok(Default::default())
     }
 
@@ -318,12 +318,11 @@ impl Interpreter {
             predicate,
         } = delete;
         let table = self.open_table(table_name, None)?;
-        let mut iter = table.iter();
         let predicate = predicate
             .map(|p| resolve_expression(p, &table))
             .transpose()?
             .unwrap_or_else(|| Expression::Value(1.into()));
-        for row in iter.filter_where(&predicate, &table) {
+        for row in table.iter().filter_where(&predicate, &table) {
             let row = row?;
             table.delete_row(&row, self)?;
         }
@@ -337,7 +336,6 @@ impl Interpreter {
             filter,
         } = update;
         let table = self.open_table(table_name, None)?;
-        let mut iter = table.iter();
         let mut assignments = assignments
             .into_iter()
             .map(|(c, e)| Ok((table.column_index(&c)?, resolve_expression(e, &table)?)))
@@ -347,7 +345,8 @@ impl Interpreter {
             .map(|p| resolve_expression(p, &table))
             .transpose()?
             .unwrap_or_else(|| Expression::Value(1.into()));
-        for row in iter.filter_where(&filter, &table) {
+            let mut batch = Batch::default();
+        for row in table.iter().filter_where(&filter, &table) {
             let row = row?;
             let mut new_row = TableRowUpdater::new(&row, &table);
             for (column, new_value_expression) in &assignments {
@@ -355,8 +354,9 @@ impl Interpreter {
                 new_row.add_update(*column, new_value)?;
             }
             let new_row = new_row.finalise()?;
-            table.update_row(row, &self, new_row)?;
+            table.update_row_batch(row, &self, new_row, &mut batch)?;
         }
+        table.apply_batch(batch)?;
         Ok(Relation::default())
     }
 
@@ -393,7 +393,7 @@ impl Interpreter {
     }
 }
 
-pub fn resolve_expression(
+pub(crate) fn resolve_expression(
     expression: UnresolvedExpression,
     table: &impl TableColumns,
 ) -> Result<Expression> {
@@ -408,7 +408,7 @@ pub fn resolve_expression(
     }
 }
 
-pub fn evaluate_expression<H>(expression: &Expression, row: &H) -> Result<Value>
+pub(crate) fn evaluate_expression<H>(expression: &Expression, row: &H) -> Result<Value>
 where
     H: GetData,
 {
@@ -426,6 +426,9 @@ where
                     Ok(comparison_result.get_value(c))
                 }
                 BinaryOp::Mathematical(m) => {
+                    if left.is_null() || right.is_null() {
+                        return Ok(Value::Null);
+                    }
                     let left = left.cast(&Type::Integer).assume_integer()?;
                     let right = right.cast(&Type::Integer).assume_integer()?;
                     let result = match m {
