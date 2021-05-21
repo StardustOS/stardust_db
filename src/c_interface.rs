@@ -12,21 +12,36 @@ use crate::{
     Database,
 };
 
+/// Returned on success.
 pub const STARDUST_DB_OK: c_int = 0;
+/// Returned if the provided database path is not UTF-8.
 pub const STARDUST_DB_INVALID_PATH_UTF_8: c_int = 1;
+/// Returned if the database cannot be opened at the specified location.
 pub const STARDUST_DB_INVALID_PATH_LOCATION: c_int = 2;
+/// Returned if the RowSet was not initialised.
 pub const STARDUST_DB_NULL_ROW_SET: c_int = 3;
+/// Returned if the database was not opened.
 pub const STARDUST_DB_NULL_DB: c_int = 4;
+/// Returned if the query was not valid UTF-8.
 pub const STARDUST_DB_INVALID_QUERY_UTF_8: c_int = 5;
+/// Returned if the query returned no result.
 pub const STARDUST_DB_NO_RESULT: c_int = 6;
+/// Returned if the query resulted in an execution error.
 pub const STARDUST_DB_EXECUTION_ERROR: c_int = 7;
+/// Returned if the current row is past the end of the RowSet.
 pub const STARDUST_DB_END: c_int = 8;
+/// Returned if the column with the specified key could not be found.
 pub const STARDUST_DB_NO_COLUMN: c_int = 9;
+/// Returned if the provided string buffer is too small for the value.
 pub const STARDUST_DB_BUFFER_TOO_SMALL: c_int = 10;
+/// Returned if the specified value is the wrong type.
 pub const STARDUST_DB_VALUE_WRONG_TYPE: c_int = 11;
+/// Returned if the specified value is null.
 pub const STARDUST_DB_VALUE_NULL: c_int = 12;
+/// Returned if there was an error creating the temporary database.
 pub const STARDUST_DB_TEMP_DB_ERROR: c_int = 13;
 
+/// Used to zero-initialise the RowSet before using as an argument in `execute_query`.
 pub const ROW_SET_INIT: RowSet = RowSet {
     relation: 0 as *mut Relation,
     current_row: 0,
@@ -57,12 +72,14 @@ impl DerefMut for DatabaseRef {
     }
 }
 
+/// Stores a database connection for the C interface.
 #[repr(C)]
 pub enum Db {
     Ordinary(*mut Database),
     Temporary(*mut TemporaryDatabase),
 }
 
+/// Stores a list of rows returned from a query execution for the C interface.
 #[repr(C)]
 pub struct RowSet {
     relation: *mut Relation,
@@ -70,6 +87,9 @@ pub struct RowSet {
 }
 
 /// Opens the database at the specified path. Returns `STARDUST_DB_OK` on success.
+/// # Safety
+/// `path` must be a null-terminated string.
+/// `db` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn open_database(path: *const c_char, db: *mut Db) -> c_int {
     let path = CStr::from_ptr(path);
@@ -84,6 +104,8 @@ pub unsafe extern "C" fn open_database(path: *const c_char, db: *mut Db) -> c_in
 }
 
 /// Opens a temporary database. Returns `STARDUST_DB_OK` on success.
+/// # Safety
+/// `db` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn temp_db(db: *mut Db) -> c_int {
     let database = Box::new(result_to_error!(
@@ -96,6 +118,8 @@ pub unsafe extern "C" fn temp_db(db: *mut Db) -> c_int {
 }
 
 /// Closes the database. This function should always succeed.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query` or `INIT_ROW_SET`.
 #[no_mangle]
 pub unsafe extern "C" fn close_db(db: *mut Db) {
     let database = option_to_error!(db.as_mut());
@@ -111,6 +135,8 @@ pub unsafe extern "C" fn close_db(db: *mut Db) {
 }
 
 /// Frees the memory from the `RowSet`.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query` or `INIT_ROW_SET`.
 #[no_mangle]
 pub unsafe extern "C" fn close_row_set(row_set: *mut RowSet) {
     let row_set = option_to_error!(row_set.as_mut());
@@ -161,6 +187,11 @@ unsafe fn get_relation_and_verify_row(
 
 /// Executes the query in `query` and places the result in `row_set`.
 /// Errors will be placed in the buffer at `err_buf`, which must be no smaller than `err_buff_len`.
+/// # Safety
+/// `db` must point to a Db initialised by `open_database` or `temp_db`.
+/// `query` must be a null-terminated string.
+/// `row_set` must point to a RowSet initialised by `ROW_SET_INIT`, or a previous invocation of `execute_query`.
+/// `err_buff` must point to a valid piece of memory, no shorter than `err_buff_len`.
 #[no_mangle]
 pub unsafe extern "C" fn execute_query(
     db: *mut Db,
@@ -180,13 +211,21 @@ pub unsafe extern "C" fn execute_query(
         },
         Err(e) => {
             let err_str = e.to_string();
-            return result_to_error!(fill_buffer(&err_str, err_buff, err_buff_len, true, STARDUST_DB_EXECUTION_ERROR))
+            return result_to_error!(fill_buffer(
+                &err_str,
+                err_buff,
+                err_buff_len,
+                true,
+                STARDUST_DB_EXECUTION_ERROR
+            ));
         }
     }
     STARDUST_DB_OK
 }
 
 /// Move to the next row in the `RowSet`. Returns `STARDUST_DB_END` if the row is past the end of the `RowSet`.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
 #[no_mangle]
 pub unsafe extern "C" fn next_row(row_set: *mut RowSet) -> c_int {
     let row_set = option_to_error!(row_set.as_mut(), STARDUST_DB_NULL_ROW_SET);
@@ -199,6 +238,8 @@ pub unsafe extern "C" fn next_row(row_set: *mut RowSet) -> c_int {
 }
 
 /// Set the current row of the `RowSet` to the specified value. Returns `STARDUST_DB_END` if the row is past the end of the `RowSet`.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
 #[no_mangle]
 pub unsafe extern "C" fn set_row(row_set: *mut RowSet, row: usize) -> c_int {
     let row_set = option_to_error!(row_set.as_mut(), STARDUST_DB_NULL_ROW_SET);
@@ -211,6 +252,9 @@ pub unsafe extern "C" fn set_row(row_set: *mut RowSet, row: usize) -> c_int {
 }
 
 /// Sets the value in `is_end` to 1 if the current row is past the end of the `RowSet`, otherwise the value is set to 0.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `is_end` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn is_end(row_set: *const RowSet, is_end: *mut c_int) -> c_int {
     let row_set = option_to_error!(row_set.as_ref(), STARDUST_DB_NULL_ROW_SET);
@@ -221,6 +265,9 @@ pub unsafe extern "C" fn is_end(row_set: *const RowSet, is_end: *mut c_int) -> c
 }
 
 /// Sets the value in `num_columns` to be the number of columns in the `RowSet`.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `num_columns` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn num_columns(row_set: *const RowSet, num_columns: *mut usize) -> c_int {
     let row_set = option_to_error!(row_set.as_ref(), STARDUST_DB_NULL_ROW_SET);
@@ -230,6 +277,9 @@ pub unsafe extern "C" fn num_columns(row_set: *const RowSet, num_columns: *mut u
 }
 
 /// Sets the value in `num_rows` to be the number of rows in the `RowSet`.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `num_rows` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn num_rows(row_set: *const RowSet, num_rows: *mut usize) -> c_int {
     let row_set = option_to_error!(row_set.as_ref(), STARDUST_DB_NULL_ROW_SET);
@@ -246,10 +296,13 @@ unsafe fn get_value_index(
     if column > relation.num_columns() {
         return Err(STARDUST_DB_NO_COLUMN);
     }
-    Ok(relation.get_value(column, row))
+    relation.get_value(column, row).ok_or(STARDUST_DB_END)
 }
 
 /// Sets the value in `is_null` to 1 if the value at the specified column is Null, otherwise 0.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `is_null` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn is_null_index(
     row_set: *const RowSet,
@@ -262,6 +315,9 @@ pub unsafe extern "C" fn is_null_index(
 }
 
 /// Sets the value in `is_string` to 1 if the value at the specified column is a string, otherwise 0.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `is_string` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn is_string_index(
     row_set: *const RowSet,
@@ -274,6 +330,9 @@ pub unsafe extern "C" fn is_string_index(
 }
 
 /// Sets the value in `is_int` to 1 if the value at the specified column is an integer, otherwise 0.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `is_int` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn is_int_index(
     row_set: *const RowSet,
@@ -288,7 +347,13 @@ pub unsafe extern "C" fn is_int_index(
 unsafe fn get_string(value: &Value, string_buffer: *mut c_char, buffer_len: usize) -> c_int {
     match value {
         Value::TypedValue(TypeContents::String(string)) => {
-            result_to_error!(fill_buffer(string, string_buffer, buffer_len, false, STARDUST_DB_OK))
+            result_to_error!(fill_buffer(
+                string,
+                string_buffer,
+                buffer_len,
+                false,
+                STARDUST_DB_OK
+            ))
         }
         Value::Null => STARDUST_DB_VALUE_NULL,
         _ => STARDUST_DB_VALUE_WRONG_TYPE,
@@ -300,7 +365,7 @@ unsafe fn fill_buffer<T>(
     mut string_buffer: *mut c_char,
     buffer_len: usize,
     truncate: bool,
-    ok_value: T
+    ok_value: T,
 ) -> Result<T, c_int> {
     for byte in string.bytes().take(buffer_len - 1) {
         *string_buffer = byte as c_char;
@@ -327,6 +392,9 @@ unsafe fn as_int(value: &Value, int_buffer: *mut IntegerStorage) -> c_int {
 
 /// If the value at the specified column is a string, copy the value to the buffer, otherwise a type error is returned.
 /// `STARDUST_DB_BUFFER_TOO_SMALL` is returned if the string buffer is too small.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `string_buffer` must point to a valid piece of memory, no shorter than `buffer_len`.
 #[no_mangle]
 pub unsafe extern "C" fn get_string_index(
     row_set: *const RowSet,
@@ -340,6 +408,9 @@ pub unsafe extern "C" fn get_string_index(
 }
 
 /// If the value at the specified column is an integer, copy the value to the buffer, otherwise a type error is returned.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `int_buffer` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn get_int_index(
     row_set: *const RowSet,
@@ -352,6 +423,9 @@ pub unsafe extern "C" fn get_int_index(
 
 /// Cast the value to a string and copy the value to the buffer. An error will be returned if the value is null.
 /// `STARDUST_DB_BUFFER_TOO_SMALL` is returned if the string buffer is too small.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `string_buffer` must point to a valid piece of memory, no shorter than `buffer_len`.
 #[no_mangle]
 pub unsafe extern "C" fn get_string_index_cast(
     row_set: *const RowSet,
@@ -361,13 +435,22 @@ pub unsafe extern "C" fn get_string_index_cast(
 ) -> c_int {
     let value = result_to_error!(get_value_index(row_set, column));
     if let Some(string) = value.cast_string() {
-        result_to_error!(fill_buffer(&string, string_buffer, buffer_len, false, STARDUST_DB_OK))
+        result_to_error!(fill_buffer(
+            &string,
+            string_buffer,
+            buffer_len,
+            false,
+            STARDUST_DB_OK
+        ))
     } else {
         STARDUST_DB_VALUE_NULL
     }
 }
 
 /// Cast the value to an integer and copy the value to the buffer. An error will be returned if the value is null.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `int_buffer` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn get_int_index_cast(
     row_set: *const RowSet,
@@ -396,6 +479,10 @@ unsafe fn get_value_named(
 }
 
 /// Sets the value in `is_null` to 1 if the value at the specified column is null, otherwise 0.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `column` must be a null-terminated string.
+/// `is_string` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn is_null_named(
     row_set: *const RowSet,
@@ -408,6 +495,10 @@ pub unsafe extern "C" fn is_null_named(
 }
 
 /// Sets the value in `is_string` to 1 if the value at the specified column is a string, otherwise 0.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `column` must be a null-terminated string.
+/// `is_string` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn is_string_named(
     row_set: *const RowSet,
@@ -420,6 +511,10 @@ pub unsafe extern "C" fn is_string_named(
 }
 
 /// Sets the value in `is_int` to 1 if the value at the specified column is an integer, otherwise 0.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `column` must be a null-terminated string.
+/// `is_int` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn is_int_named(
     row_set: *const RowSet,
@@ -433,6 +528,10 @@ pub unsafe extern "C" fn is_int_named(
 
 /// If the value at the specified column is a string, copy the value to the buffer, otherwise a type error is returned.
 /// `STARDUST_DB_BUFFER_TOO_SMALL` is returned if the string buffer is too small.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `column` must be a null-terminated string.
+/// `string_buffer` must point to a valid piece of memory, no smaller than `buffer_len`.
 #[no_mangle]
 pub unsafe extern "C" fn get_string_named(
     row_set: *const RowSet,
@@ -446,6 +545,10 @@ pub unsafe extern "C" fn get_string_named(
 }
 
 /// If the value at the specified column is an integer, copy the value to the buffer, otherwise a type error is returned.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `column` must be a null-terminated string.
+/// `int_buffer` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn get_int_named(
     row_set: *const RowSet,
@@ -458,6 +561,10 @@ pub unsafe extern "C" fn get_int_named(
 
 /// Cast the value to a string and copy the value to the buffer. An error will be returned if the value is null.
 /// `STARDUST_DB_BUFFER_TOO_SMALL` is returned if the string buffer is too small.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `column` must be a null-terminated string.
+/// `string_buffer` must point to a valid piece of memory, no smaller than `buffer_len`.
 #[no_mangle]
 pub unsafe extern "C" fn get_string_named_cast(
     row_set: *const RowSet,
@@ -467,12 +574,22 @@ pub unsafe extern "C" fn get_string_named_cast(
 ) -> c_int {
     let value = result_to_error!(get_value_named(row_set, column));
     if let Some(string) = value.cast_string() {
-        result_to_error!(fill_buffer(&string, string_buffer, buffer_len, false, STARDUST_DB_OK))
+        result_to_error!(fill_buffer(
+            &string,
+            string_buffer,
+            buffer_len,
+            false,
+            STARDUST_DB_OK
+        ))
     } else {
         STARDUST_DB_VALUE_NULL
     }
 }
 /// Cast the value to an integer and copy the value to the buffer. An error will be returned if the value is null.
+/// # Safety
+/// `row_set` must point to a RowSet initialised by `execute_query`.
+/// `column` must be a null-terminated string.
+/// `int_buffer` must point to a valid piece of memory.
 #[no_mangle]
 pub unsafe extern "C" fn get_int_named_cast(
     row_set: *const RowSet,

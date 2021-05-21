@@ -15,7 +15,7 @@ use crate::{
     Empty, GetData, TableColumns,
 };
 use once_cell::sync::OnceCell;
-use sled::{Batch, Db, open};
+use sled::{Batch, Config, Db};
 use std::{borrow::Borrow, collections::HashMap, path::Path};
 
 static FOREIGN_KEY_COLUMNS: OnceCell<Columns> = OnceCell::new();
@@ -27,7 +27,7 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Interpreter> {
-        let db = open(path)?;
+        let db = Config::default().path(path).flush_every_ms(None).open()?;
         Ok(Interpreter {
             db,
             foreign_keys: OnceCell::new(),
@@ -248,6 +248,7 @@ impl Interpreter {
                     projections,
                     from,
                     selection,
+                    order_by,
                 } = select;
 
                 let join_handler = JoinHandler::new(self, from)?;
@@ -282,12 +283,14 @@ impl Interpreter {
                     }
                 }
 
-                self.generate_results(
+                let mut result = self.generate_results(
                     result_column_names,
                     projection_expressions,
                     join_handler,
                     selection,
-                )
+                )?;
+                result.sort(order_by)?;
+                Ok(result)
             }
             SelectQuery::Values(values) => {
                 let Values { rows } = values;
@@ -345,7 +348,7 @@ impl Interpreter {
             .map(|p| resolve_expression(p, &table))
             .transpose()?
             .unwrap_or_else(|| Expression::Value(1.into()));
-            let mut batch = Batch::default();
+        let mut batch = Batch::default();
         for row in table.iter().filter_where(&filter, &table) {
             let row = row?;
             let mut new_row = TableRowUpdater::new(&row, &table);

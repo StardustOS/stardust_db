@@ -38,7 +38,10 @@ impl Type {
                 )?))
             }
             Type::String => TypeContents::String(String::from_utf8(data.into()).map_err(|e| {
-                Error::Internal(format!("Could not decode bytes to string: {:?}, e: {}", data, e))
+                Error::Internal(format!(
+                    "Could not decode bytes to string: {:?}, e: {}",
+                    data, e
+                ))
             })?),
         })
     }
@@ -130,6 +133,7 @@ impl Default for Value {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum Comparison {
     Unknown,
     LessThan,
@@ -212,13 +216,6 @@ impl Value {
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
-
-    /*pub fn get_type(&self) -> Option<Type> {
-        match self {
-            Self::Null => None,
-            Self::TypedValue(contents) => Some(contents.get_type()),
-        }
-    }*/
 
     fn get_truth(&self) -> TruthValue {
         match self {
@@ -420,8 +417,87 @@ fn string_to_int(string: &str) -> IntegerStorage {
         }
     }
     if sign {
-        !result
+        -result
     } else {
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::data_types::{string_to_int, Comparison, Value};
+
+    #[test]
+    fn test_string_to_int() {
+        assert_eq!(string_to_int("0"), 0);
+        assert_eq!(string_to_int("1"), 1);
+        assert_eq!(string_to_int("10"), 10);
+        assert_eq!(string_to_int("01"), 1);
+        assert_eq!(string_to_int("010"), 10);
+        assert_eq!(string_to_int("-0"), 0);
+        assert_eq!(string_to_int("-1"), -1);
+        assert_eq!(string_to_int("-10"), -10);
+        assert_eq!(string_to_int("-01"), -1);
+        assert_eq!(string_to_int("-010"), -10);
+
+        assert_eq!(string_to_int("hello"), 0);
+        assert_eq!(string_to_int("0hello"), 0);
+        assert_eq!(string_to_int("1hello"), 1);
+        assert_eq!(string_to_int("10hello"), 10);
+        assert_eq!(string_to_int("10hello10"), 10);
+        assert_eq!(string_to_int("0101hello"), 101);
+        assert_eq!(string_to_int("-hello"), 0);
+        assert_eq!(string_to_int("-0hello"), 0);
+        assert_eq!(string_to_int("-1hello"), -1);
+        assert_eq!(string_to_int("-10hello"), -10);
+        assert_eq!(string_to_int("-10hello10"), -10);
+        assert_eq!(string_to_int("-0101hello"), -101);
+        assert_eq!(
+            string_to_int("123123123123123123123123123"),
+            9223372036854775807
+        );
+        assert_eq!(
+            string_to_int("-123123123123123123123123123"),
+            -9223372036854775808
+        );
+    }
+
+    #[test]
+    fn test_comparisons() {
+        assert_eq!(Value::Null.compare(&Value::Null), Comparison::Unknown);
+        assert_eq!(Value::Null.compare(&5.into()), Comparison::Unknown);
+        assert_eq!(Value::Null.compare(&"Hello".into()), Comparison::Unknown);
+        assert_eq!(Value::from(5).compare(&Value::Null), Comparison::Unknown);
+        assert_eq!(
+            Value::from("Hello").compare(&Value::Null),
+            Comparison::Unknown
+        );
+
+        assert_eq!(Value::from(5).compare(&5.into()), Comparison::Equal);
+        assert_eq!(Value::from(0).compare(&5.into()), Comparison::LessThan);
+        assert_eq!(Value::from(5).compare(&0.into()), Comparison::GreaterThan);
+
+        assert_eq!(
+            Value::from("hello").compare(&"hello".into()),
+            Comparison::Equal
+        );
+        assert_eq!(
+            Value::from("HELLO").compare(&"hello".into()),
+            Comparison::LessThan
+        );
+        assert_eq!(
+            Value::from("hello").compare(&"HELLO".into()),
+            Comparison::GreaterThan
+        );
+
+        assert_eq!(Value::from(5).compare(&"5".into()), Comparison::Equal);
+        assert_eq!(
+            Value::from("HELLO").compare(&5.into()),
+            Comparison::LessThan
+        );
+        assert_eq!(
+            Value::from(5).compare(&"HELLO".into()),
+            Comparison::GreaterThan
+        );
     }
 }

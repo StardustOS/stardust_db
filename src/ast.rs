@@ -282,6 +282,7 @@ pub struct SelectContents {
     pub projections: Vec<Projection>,
     pub from: Option<TableJoins>,
     pub selection: Option<UnresolvedExpression>,
+    pub order_by: Vec<OrderBy>,
 }
 
 impl SelectContents {
@@ -289,13 +290,42 @@ impl SelectContents {
         projections: Vec<Projection>,
         from: Option<TableJoins>,
         selection: Option<UnresolvedExpression>,
+        order_by: Vec<OrderBy>,
     ) -> Self {
         Self {
             projections,
             from,
             selection,
+            order_by,
         }
     }
+}
+
+#[derive(Debug)]
+pub struct OrderBy {
+    pub expression: UnresolvedExpression,
+    pub direction: OrderByDirection,
+    pub nulls_first: bool,
+}
+
+impl OrderBy {
+    pub fn new(
+        expression: UnresolvedExpression,
+        direction: OrderByDirection,
+        nulls_first: bool,
+    ) -> Self {
+        Self {
+            expression,
+            direction,
+            nulls_first,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum OrderByDirection {
+    Ascending,
+    Descending,
 }
 
 #[derive(Debug)]
@@ -439,11 +469,6 @@ impl ColumnName {
 
 impl std::fmt::Display for ColumnName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        /*if let Some(table_name) = &self.table_name {
-            write!(f, "{}.{}", table_name, self.column_name)
-        } else {
-            write!(f, "{}", self.column_name)
-        }*/
         write!(f, "{}", self.column_name)
     }
 }

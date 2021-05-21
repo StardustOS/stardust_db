@@ -73,12 +73,20 @@ impl Columns {
     }
 
     fn bitmask_start(&self) -> usize {
-        self.sized_len + self.unsized_count * size_of::<u16>()
+        self.sized_len
+    }
+
+    fn directory_start(&self) -> usize {
+        self.sized_len + self.bitmask_size()
+    }
+
+    fn fixed_len(&self) -> usize {
+        self.sized_len + self.bitmask_size() + self.unsized_count * size_of::<u16>()
     }
 
     fn last_unsized_position(&self) -> usize {
         assert!(self.unsized_count > 0);
-        self.sized_len + (self.unsized_count - 1) * size_of::<u16>()
+        self.directory_start() + (self.unsized_count - 1) * size_of::<u16>()
     }
 
     pub fn get_index(&self, column: &str) -> Option<usize> {
@@ -129,7 +137,7 @@ impl Columns {
             }));
         }
         let bitmask_start = self.bitmask_start();
-        let mut row = vec![0; bitmask_start + self.bitmask_size()];
+        let mut row = vec![0; self.fixed_len()];
 
         for (entry, value) in self.columns.values().zip(data) {
             let contents = entry.get_type().resolve_value(value);
@@ -143,7 +151,7 @@ impl Columns {
                 } // Otherwise value and bitmask is 0
             } else if let Some(contents) = contents {
                 let (bytes, _) = contents.encode();
-                append_unsized(self.sized_len + pos, bytes.as_ref(), &mut row);
+                append_unsized(self.directory_start() + pos, bytes.as_ref(), &mut row);
             } // Otherwise dictionary entry is 0
         }
         Ok(row)
@@ -165,7 +173,7 @@ impl Columns {
                 entry.get_type().decode(bytes).map(Value::TypedValue)
             }
         } else {
-            let position = self.sized_len + entry.position();
+            let position = self.directory_start() + entry.position();
             if row[position..position + size_of::<u16>()] == [0u8; size_of::<u16>()] {
                 Ok(Value::Null)
             } else {
@@ -239,5 +247,616 @@ impl TableColumns for (&Columns, &str) {
         } else {
             Err(ExecutionError::NoColumn(format!("{}.{}", this_name.to_string(), column)).into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::data_types::{Type, Value};
+
+    use super::Columns;
+
+    #[test]
+    fn single_sized() {
+        let mut columns = Columns::new();
+        columns.add_column("id".to_string(), Type::Integer).unwrap();
+        assert_eq!(
+            columns.generate_row(vec![25.into()].into_iter()).unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 25, 1]
+        );
+        assert_eq!(
+            columns
+                .get_data("id", &[0, 0, 0, 0, 0, 0, 0, 25, 1])
+                .unwrap(),
+            25.into()
+        );
+        assert_eq!(
+            columns.get_data(0, &[0, 0, 0, 0, 0, 0, 0, 25, 1]).unwrap(),
+            25.into()
+        );
+        assert_eq!(
+            columns.generate_row(vec![Value::Null].into_iter()).unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            columns
+                .get_data("id", &[0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns.get_data(0, &[0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn single_unsized() {
+        let mut columns = Columns::new();
+        columns
+            .add_column("name".to_string(), Type::String)
+            .unwrap();
+        assert_eq!(
+            columns
+                .generate_row(vec!["User".into()].into_iter())
+                .unwrap(),
+            vec![0, 2, 85, 115, 101, 114]
+        );
+        assert_eq!(
+            columns
+                .get_data("name", &[0, 2, 85, 115, 101, 114])
+                .unwrap(),
+            "User".into()
+        );
+        assert_eq!(
+            columns.get_data(0, &[0, 2, 85, 115, 101, 114]).unwrap(),
+            "User".into()
+        );
+        assert_eq!(
+            columns.generate_row(vec![Value::Null].into_iter()).unwrap(),
+            vec![0, 0]
+        );
+        assert_eq!(columns.get_data("name", &[0, 0]).unwrap(), Value::Null);
+        assert_eq!(columns.get_data(0, &[0, 0]).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn sized_then_unsized() {
+        let mut columns = Columns::new();
+        columns.add_column("id".to_string(), Type::Integer).unwrap();
+        columns
+            .add_column("name".to_string(), Type::String)
+            .unwrap();
+        assert_eq!(
+            columns
+                .generate_row(vec![25.into(), "User".into()].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 11, 85, 115, 101, 114]
+        );
+        assert_eq!(
+            columns
+                .get_data(
+                    "id",
+                    &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 11, 85, 115, 101, 114]
+                )
+                .unwrap(),
+            25.into()
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 11, 85, 115, 101, 114])
+                .unwrap(),
+            25.into()
+        );
+        assert_eq!(
+            columns
+                .get_data(
+                    "name",
+                    &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 11, 85, 115, 101, 114]
+                )
+                .unwrap(),
+            "User".into()
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 11, 85, 115, 101, 114])
+                .unwrap(),
+            "User".into()
+        );
+
+        assert_eq!(
+            columns
+                .generate_row(vec![25.into(), Value::Null].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 0]
+        );
+        assert_eq!(
+            columns
+                .get_data("id", &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 0])
+                .unwrap(),
+            25.into()
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 0])
+                .unwrap(),
+            25.into()
+        );
+        assert_eq!(
+            columns
+                .get_data("name", &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+
+        assert_eq!(
+            columns
+                .generate_row(vec![Value::Null, "User".into()].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 85, 115, 101, 114]
+        );
+        assert_eq!(
+            columns
+                .get_data("id", &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 85, 115, 101, 114])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 85, 115, 101, 114])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(
+                    "name",
+                    &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 85, 115, 101, 114]
+                )
+                .unwrap(),
+            "User".into()
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 85, 115, 101, 114])
+                .unwrap(),
+            "User".into()
+        );
+
+        assert_eq!(
+            columns
+                .generate_row(vec![Value::Null, Value::Null].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            columns
+                .get_data("id", &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data("name", &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn unsized_then_sized() {
+        let mut columns = Columns::new();
+        columns
+            .add_column("name".to_string(), Type::String)
+            .unwrap();
+        columns.add_column("id".to_string(), Type::Integer).unwrap();
+        assert_eq!(
+            columns
+                .generate_row(vec!["User".into(), 25.into()].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 11, 85, 115, 101, 114]
+        );
+        assert_eq!(
+            columns
+                .get_data(
+                    "id",
+                    &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 11, 85, 115, 101, 114]
+                )
+                .unwrap(),
+            25.into()
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 11, 85, 115, 101, 114])
+                .unwrap(),
+            25.into()
+        );
+        assert_eq!(
+            columns
+                .get_data(
+                    "name",
+                    &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 11, 85, 115, 101, 114]
+                )
+                .unwrap(),
+            "User".into()
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 11, 85, 115, 101, 114])
+                .unwrap(),
+            "User".into()
+        );
+
+        assert_eq!(
+            columns
+                .generate_row(vec![Value::Null, 25.into()].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 0]
+        );
+        assert_eq!(
+            columns
+                .get_data("id", &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 0])
+                .unwrap(),
+            25.into()
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 0])
+                .unwrap(),
+            25.into()
+        );
+        assert_eq!(
+            columns
+                .get_data("name", &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 0, 0, 0, 0, 25, 1, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+
+        assert_eq!(
+            columns
+                .generate_row(vec!["User".into(), Value::Null].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 85, 115, 101, 114]
+        );
+        assert_eq!(
+            columns
+                .get_data("id", &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 85, 115, 101, 114])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 85, 115, 101, 114])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(
+                    "name",
+                    &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 85, 115, 101, 114]
+                )
+                .unwrap(),
+            "User".into()
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 85, 115, 101, 114])
+                .unwrap(),
+            "User".into()
+        );
+
+        assert_eq!(
+            columns
+                .generate_row(vec![Value::Null, Value::Null].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            columns
+                .get_data("id", &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data("name", &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn multiple_sized() {
+        let mut columns = Columns::new();
+        columns.add_column("id".to_string(), Type::Integer).unwrap();
+        columns
+            .add_column("age".to_string(), Type::Integer)
+            .unwrap();
+        assert_eq!(
+            columns
+                .generate_row(vec![1.into(), 25.into()].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 25, 3]
+        );
+        assert_eq!(
+            columns
+                .get_data("id", &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 25, 3])
+                .unwrap(),
+            1.into()
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 25, 3])
+                .unwrap(),
+            1.into()
+        );
+        assert_eq!(
+            columns
+                .get_data("age", &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 25, 3])
+                .unwrap(),
+            25.into()
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 25, 3])
+                .unwrap(),
+            25.into()
+        );
+
+        assert_eq!(
+            columns
+                .generate_row(vec![1.into(), Value::Null].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+        );
+        assert_eq!(
+            columns
+                .get_data("id", &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+                .unwrap(),
+            1.into()
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+                .unwrap(),
+            1.into()
+        );
+        assert_eq!(
+            columns
+                .get_data("age", &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+                .unwrap(),
+            Value::Null
+        );
+
+        assert_eq!(
+            columns
+                .generate_row(vec![Value::Null, 25.into()].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 25, 2]
+        );
+        assert_eq!(
+            columns
+                .get_data("id", &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 25, 2])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 25, 2])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data("age", &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 25, 2])
+                .unwrap(),
+            25.into()
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 25, 2])
+                .unwrap(),
+            25.into()
+        );
+
+        assert_eq!(
+            columns
+                .generate_row(vec![Value::Null, Value::Null].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            columns
+                .get_data("id", &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data("age", &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn multiple_unsized() {
+        let mut columns = Columns::new();
+        columns
+            .add_column("name".to_string(), Type::String)
+            .unwrap();
+        columns
+            .add_column("hobby".to_string(), Type::String)
+            .unwrap();
+        assert_eq!(
+            columns
+                .generate_row(vec!["User".into(), "Music".into()].into_iter())
+                .unwrap(),
+            vec![0, 4, 0, 8, 85, 115, 101, 114, 77, 117, 115, 105, 99]
+        );
+        assert_eq!(
+            columns
+                .get_data(
+                    "name",
+                    &[0, 4, 0, 8, 85, 115, 101, 114, 77, 117, 115, 105, 99]
+                )
+                .unwrap(),
+            "User".into()
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 4, 0, 8, 85, 115, 101, 114, 77, 117, 115, 105, 99])
+                .unwrap(),
+            "User".into()
+        );
+        assert_eq!(
+            columns
+                .get_data(
+                    "hobby",
+                    &[0, 4, 0, 8, 85, 115, 101, 114, 77, 117, 115, 105, 99]
+                )
+                .unwrap(),
+            "Music".into()
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 4, 0, 8, 85, 115, 101, 114, 77, 117, 115, 105, 99])
+                .unwrap(),
+            "Music".into()
+        );
+
+        assert_eq!(
+            columns
+                .generate_row(vec!["User".into(), Value::Null].into_iter())
+                .unwrap(),
+            vec![0, 4, 0, 0, 85, 115, 101, 114]
+        );
+        assert_eq!(
+            columns
+                .get_data("name", &[0, 4, 0, 0, 85, 115, 101, 114])
+                .unwrap(),
+            "User".into()
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 4, 0, 0, 85, 115, 101, 114])
+                .unwrap(),
+            "User".into()
+        );
+        assert_eq!(
+            columns
+                .get_data("hobby", &[0, 4, 0, 0, 85, 115, 101, 114])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 4, 0, 0, 85, 115, 101, 114])
+                .unwrap(),
+            Value::Null
+        );
+
+        assert_eq!(
+            columns
+                .generate_row(vec![Value::Null, "Music".into()].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 4, 77, 117, 115, 105, 99]
+        );
+        assert_eq!(
+            columns
+                .get_data("name", &[0, 0, 0, 4, 77, 117, 115, 105, 99])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data(0, &[0, 0, 0, 4, 77, 117, 115, 105, 99])
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            columns
+                .get_data("hobby", &[0, 0, 0, 4, 77, 117, 115, 105, 99])
+                .unwrap(),
+            "Music".into()
+        );
+        assert_eq!(
+            columns
+                .get_data(1, &[0, 0, 0, 4, 77, 117, 115, 105, 99])
+                .unwrap(),
+            "Music".into()
+        );
+
+        assert_eq!(
+            columns
+                .generate_row(vec![Value::Null, Value::Null].into_iter())
+                .unwrap(),
+            vec![0, 0, 0, 0]
+        );
+        assert_eq!(
+            columns.get_data("name", &[0, 0, 0, 0]).unwrap(),
+            Value::Null
+        );
+        assert_eq!(columns.get_data(0, &[0, 0, 0, 0]).unwrap(), Value::Null);
+        assert_eq!(
+            columns.get_data("hobby", &[0, 0, 0, 0]).unwrap(),
+            Value::Null
+        );
+        assert_eq!(columns.get_data(1, &[0, 0, 0, 0]).unwrap(), Value::Null);
     }
 }

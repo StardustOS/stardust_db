@@ -251,6 +251,72 @@ fn select_multiple_values_same_statement() {
 }
 
 #[test]
+fn select_multiple_values_same_statement_order_by() {
+    let db = temp_db();
+    let _ = db
+        .execute_query("CREATE TABLE test (name string, age int);")
+        .unwrap();
+    let _ = db
+        .execute_query("INSERT INTO test VALUES ('User', 25), ('User 2', 17);")
+        .unwrap();
+    let result = db
+        .execute_query("SELECT * FROM test ORDER BY (name);")
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    result[0].assert_equals_ordered(
+        vec![
+            vec![Value::from("User"), Value::from(25)],
+            vec![Value::from("User 2"), Value::from(17)],
+        ],
+        vec!["name", "age"],
+    )
+}
+
+#[test]
+fn select_multiple_values_same_statement_order_by_desc() {
+    let db = temp_db();
+    let _ = db
+        .execute_query("CREATE TABLE test (name string, age int);")
+        .unwrap();
+    let _ = db
+        .execute_query("INSERT INTO test VALUES ('User', 25), ('User 2', 17);")
+        .unwrap();
+    let result = db
+        .execute_query("SELECT * FROM test ORDER BY name DESC;")
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    result[0].assert_equals_ordered(
+        vec![
+            vec![Value::from("User 2"), Value::from(17)],
+            vec![Value::from("User"), Value::from(25)],
+        ],
+        vec!["name", "age"],
+    )
+}
+
+#[test]
+fn select_multiple_values_same_statement_order_by_mutliple_columns() {
+    let db = temp_db();
+    let _ = db
+        .execute_query("CREATE TABLE test (name string, age int);")
+        .unwrap();
+    let _ = db
+        .execute_query("INSERT INTO test VALUES ('User', 25), ('User', 17);")
+        .unwrap();
+    let result = db
+        .execute_query("SELECT * FROM test ORDER BY name DESC, age ASC;")
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    result[0].assert_equals_ordered(
+        vec![
+            vec![Value::from("User"), Value::from(17)],
+            vec![Value::from("User"), Value::from(25)],
+        ],
+        vec!["name", "age"],
+    )
+}
+
+#[test]
 fn select_multiple_values_different_statements() {
     let db = temp_db();
     let _ = db

@@ -78,6 +78,7 @@ pub fn parse_expression(expression: Expr) -> UnresolvedExpression {
                 _ => unimplemented!("{:?}", op),
             }
         }
+        Expr::Nested(e) => parse_expression(*e),
         _ => unimplemented!("{:?}", expression),
     }
 }

@@ -1,15 +1,39 @@
-use stardust_db::{error::Result, Database};
-use std::io::{self, Write};
+use stardust_db::{error::Result, temporary_database::TemporaryDatabase, Database};
+use std::{
+    io::{self, Write},
+    ops::Deref,
+};
 
 fn main() {
-    if let Err(e) = get_results() {
+    let args: Vec<_> = std::env::args().collect();
+    let path = args.get(1).map(|s| s.as_str());
+    if let Err(e) = get_results(path) {
         println!("Error opening database: {}", e)
     }
 }
 
-fn get_results() -> Result<()> {
+enum Db {
+    Ordinary(Database),
+    Temporary(TemporaryDatabase),
+}
+
+impl Deref for Db {
+    type Target = Database;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Db::Ordinary(db) => db,
+            Db::Temporary(db) => db,
+        }
+    }
+}
+
+fn get_results(path: Option<&str>) -> Result<()> {
     let mut sql = String::new();
-    let db = Database::open("D:\\Documents\\ComputerScience\\CS5099\\test.db")?;
+    let db = match path {
+        Some(path) => Db::Ordinary(Database::open(path)?),
+        None => Db::Temporary(TemporaryDatabase::new()?),
+    };
     loop {
         sql.clear();
         print!(">");

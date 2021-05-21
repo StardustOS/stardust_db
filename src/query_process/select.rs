@@ -1,9 +1,11 @@
-use sqlparser::ast::{self, Join, Query, Select, SelectItem, SetExpr, TableFactor, TableWithJoins};
+use sqlparser::ast::{
+    self, Join, OrderByExpr, Query, Select, SelectItem, SetExpr, TableFactor, TableWithJoins,
+};
 
 use crate::{
     ast::{
-        JoinConstraint, JoinOperator, Projection, SelectContents, SelectQuery, TableJoins,
-        TableName, Values,
+        JoinConstraint, JoinOperator, OrderBy, OrderByDirection, Projection, SelectContents,
+        SelectQuery, TableJoins, TableName, Values,
     },
     error::{ExecutionError, Result},
     query_process::parse_expression,
@@ -16,12 +18,12 @@ pub fn parse_select_query(query: Query) -> Result<SelectQuery> {
                 .map(|row| row.into_iter().map(parse_expression).collect())
                 .collect(),
         )),
-        SetExpr::Select(s) => SelectQuery::Select(parse_select(*s)?),
+        SetExpr::Select(s) => SelectQuery::Select(parse_select(*s, query.order_by)?),
         _ => unimplemented!("{:?}", query.body),
     })
 }
 
-fn parse_select(select: Select) -> Result<SelectContents> {
+fn parse_select(select: Select, order_by: Vec<OrderByExpr>) -> Result<SelectContents> {
     let projections = select
         .projection
         .into_iter()
@@ -36,7 +38,8 @@ fn parse_select(select: Select) -> Result<SelectContents> {
         .collect();
     let from = parse_table_joins(select.from.into_iter())?;
     let selection = select.selection.map(parse_expression);
-    Ok(SelectContents::new(projections, from, selection))
+    let order_by = order_by.into_iter().map(parse_order_by).collect();
+    Ok(SelectContents::new(projections, from, selection, order_by))
 }
 
 fn parse_table_joins<I>(mut joins: I) -> Result<Option<TableJoins>>
@@ -140,4 +143,14 @@ fn parse_join_constraint(constraint: ast::JoinConstraint) -> JoinConstraint {
             JoinConstraint::Using(cols.into_iter().map(|i| i.to_string()).collect())
         }
     }
+}
+
+fn parse_order_by(order_by: OrderByExpr) -> OrderBy {
+    let expression = parse_expression(order_by.expr);
+    let direction = match order_by.asc {
+        Some(true) | None => OrderByDirection::Ascending,
+        Some(false) => OrderByDirection::Descending,
+    };
+    let nulls_first = matches!(order_by.nulls_first, Some(true));
+    OrderBy::new(expression, direction, nulls_first)
 }

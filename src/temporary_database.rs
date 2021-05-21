@@ -12,12 +12,14 @@ use rand::{distributions::Alphanumeric, prelude::StdRng, Rng, SeedableRng};
 use crate::error::Result;
 use crate::Database;
 
+/// A `Database` that deletes its data when dropped.
 pub struct TemporaryDatabase {
     db: Database,
     path: PathBuf,
 }
 
 impl TemporaryDatabase {
+    /// Creates a new `TemporaryDatabase`.
     pub fn new() -> Result<Self> {
         static RNG: OnceCell<Mutex<StdRng>> = OnceCell::new();
         let rng = RNG.get_or_init(|| Mutex::new(StdRng::seed_from_u64(0)));
@@ -41,6 +43,7 @@ impl TemporaryDatabase {
         Ok(Self { db, path })
     }
 
+    /// Returns the path that the data is stored in.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -66,6 +69,7 @@ impl Drop for TemporaryDatabase {
     }
 }
 
+/// Returns a new TemporaryDatabase. Panics on error.
 pub fn temp_db() -> TemporaryDatabase {
     TemporaryDatabase::new().unwrap()
 }

@@ -8,7 +8,7 @@ use interpreter::Interpreter;
 use query_process::process_query;
 use relation::Relation;
 use resolved_expression::ResolvedColumn;
-use sqlparser::{dialect::Dialect, parser::Parser};
+use sqlparser::{dialect::GenericDialect, parser::Parser};
 
 mod ast;
 mod data_types;
@@ -29,43 +29,22 @@ pub mod relation;
 #[cfg(test)]
 pub mod tests;
 
-#[derive(Debug, Default)]
-struct StardustDbDialect;
-
-impl Dialect for StardustDbDialect {
-    fn is_identifier_start(&self, ch: char) -> bool {
-        ('a'..='z').contains(&ch)
-            || ('A'..='Z').contains(&ch)
-            || ch == '_'
-            || ch == '#'
-            || ch == '@'
-            || ch == '?'
-    }
-
-    fn is_identifier_part(&self, ch: char) -> bool {
-        ('a'..='z').contains(&ch)
-            || ('A'..='Z').contains(&ch)
-            || ('0'..='9').contains(&ch)
-            || ch == '@'
-            || ch == '$'
-            || ch == '#'
-            || ch == '_'
-    }
-}
-
+/// Contains a connection to a database.
 pub struct Database {
     interpreter: Interpreter,
 }
 
 impl Database {
+    /// Open a database connection to a new or existing database.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         Ok(Self {
             interpreter: Interpreter::new(path)?,
         })
     }
 
+    /// Execute a query on the database. A relation is returned for each semicolon separated query executed.
     pub fn execute_query(&self, sql: &str) -> Result<Vec<Relation>> {
-        let dialect = StardustDbDialect {};
+        let dialect = GenericDialect {};
         let statements = Parser::parse_sql(&dialect, &sql)?;
         let mut results = Vec::with_capacity(statements.len());
         for statement in statements {
@@ -76,10 +55,12 @@ impl Database {
     }
 }
 
+/// Used to retrieve a data value from a view of a row.
 pub(crate) trait GetData {
     fn get_data(&self, column_name: &ResolvedColumn) -> Result<Value>;
 }
 
+/// A placeholder for an empty row. Always returns an error when columns are a resolved.
 pub(crate) struct Empty;
 
 impl GetData for Empty {
@@ -88,6 +69,7 @@ impl GetData for Empty {
     }
 }
 
+/// Represents a view of a list of columns. Used to resolve column names.
 pub(crate) trait TableColumns {
     fn resolve_name(&self, name: ColumnName) -> Result<ResolvedColumn>;
 }

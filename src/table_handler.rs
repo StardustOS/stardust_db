@@ -98,7 +98,7 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
         row: TableRow,
         interpreter: &Interpreter,
         new_row: Vec<Value>,
-        batch: &mut Batch
+        batch: &mut Batch,
     ) -> Result<()> {
         let (left, right) = self.update_get_left_right(row, interpreter, new_row)?;
         batch.insert(left, right);
@@ -116,7 +116,13 @@ impl<C: Borrow<Columns>, N: AsRef<str>> TableHandler<C, N> {
         Ok(())
     }
 
-    pub fn insert_values_batch(&self, values: Vec<Value>, interpreter: &Interpreter, batch: &mut Batch, key: &mut u64) -> Result<()> {
+    pub fn insert_values_batch(
+        &self,
+        values: Vec<Value>,
+        interpreter: &Interpreter,
+        batch: &mut Batch,
+        key: &mut u64,
+    ) -> Result<()> {
         self.check_row(&values, interpreter, None)?;
         let value = self
             .table_definition
@@ -255,9 +261,7 @@ pub struct TableIter {
 
 impl TableIter {
     pub fn new(tree: Tree) -> Self {
-        Self {
-            iter: tree.iter(),
-        }
+        Self { iter: tree.iter() }
     }
 
     pub fn get_next(&mut self) -> Result<Option<TableRow>> {
