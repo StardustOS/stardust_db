@@ -28,3 +28,7 @@ crate-type = ["staticlib", "lib"]
 [[bin]]
 name = "cli"
 path = "src/cli.rs"
+
+[[bin]]
+name = "stardust_demo"
+path = "src/stardust_demo.rs"

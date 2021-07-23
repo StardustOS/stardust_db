@@ -260,7 +260,7 @@ pub unsafe extern "C" fn is_end(row_set: *const RowSet, is_end: *mut c_int) -> c
     let row_set = option_to_error!(row_set.as_ref(), STARDUST_DB_NULL_ROW_SET);
     let current_row = row_set.current_row;
     let relation = option_to_error!(row_set.relation.as_ref(), STARDUST_DB_NULL_ROW_SET);
-    *is_end = (current_row > relation.num_rows()) as c_int;
+    *is_end = (current_row >= relation.num_rows()) as c_int;
     STARDUST_DB_OK
 }
 
